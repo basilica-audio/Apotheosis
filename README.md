@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/assets/icon.png" alt="Apotheosis icon" width="160"/></p>
+
 # Apotheosis
 
 *The final ascension — a lookahead true-peak brickwall limiter for the master.*
