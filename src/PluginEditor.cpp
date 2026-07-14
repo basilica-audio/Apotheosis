@@ -55,6 +55,16 @@ void ApotheosisAudioProcessorEditor::configureChoice (Choice& choice, const juce
 {
     addAndMakeVisible (choice.box);
 
+    // ComboBoxAttachment does not populate the box itself (see its JUCE doc
+    // comment); pull the choice strings straight from the live APVTS
+    // parameter (AudioParameterChoice::getAllValueStrings() returns its
+    // `choices` array) rather than duplicating the string list here, so the
+    // GUI can never drift out of sync with ParameterLayout.cpp. Item IDs are
+    // 1-based to match ComboBox's convention; ComboBoxAttachment maps them
+    // back to the parameter's 0-based choice index.
+    if (auto* parameter = audioProcessor.apvts.getParameter (parameterId))
+        choice.box.addItemList (parameter->getAllValueStrings(), 1);
+
     choice.label.setText (labelText, juce::dontSendNotification);
     choice.label.setJustificationType (juce::Justification::centred);
     choice.label.attachToComponent (&choice.box, false);
