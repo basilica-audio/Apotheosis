@@ -14,11 +14,17 @@ ApotheosisAudioProcessor::ApotheosisAudioProcessor()
     ceilingDb = apvts.getRawParameterValue (ParamIDs::ceiling);
     releaseMs = apvts.getRawParameterValue (ParamIDs::release);
     lookaheadMs = apvts.getRawParameterValue (ParamIDs::lookahead);
+    releaseCurveChoice = apvts.getRawParameterValue (ParamIDs::releaseCurve);
+    ditherChoice = apvts.getRawParameterValue (ParamIDs::dither);
+    clipMixPercent = apvts.getRawParameterValue (ParamIDs::clipMix);
 
     jassert (inputGainDb != nullptr);
     jassert (ceilingDb != nullptr);
     jassert (releaseMs != nullptr);
     jassert (lookaheadMs != nullptr);
+    jassert (releaseCurveChoice != nullptr);
+    jassert (ditherChoice != nullptr);
+    jassert (clipMixPercent != nullptr);
 }
 
 ApotheosisAudioProcessor::~ApotheosisAudioProcessor() = default;
@@ -97,6 +103,9 @@ void ApotheosisAudioProcessor::prepareToPlay (double sampleRate, int samplesPerB
     engine.setCeilingDb (ceilingDb->load (std::memory_order_relaxed));
     engine.setReleaseMs (releaseMs->load (std::memory_order_relaxed));
     engine.setLookaheadMs (lookaheadMs->load (std::memory_order_relaxed));
+    engine.setReleaseCurve (static_cast<int> (releaseCurveChoice->load (std::memory_order_relaxed)));
+    engine.setDitherMode (static_cast<int> (ditherChoice->load (std::memory_order_relaxed)));
+    engine.setClipMixPercent (clipMixPercent->load (std::memory_order_relaxed));
 
     engine.prepare (spec);
 
@@ -143,13 +152,17 @@ void ApotheosisAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
     for (auto channel = totalNumInputChannels; channel < totalNumOutputChannels; ++channel)
         buffer.clear (channel, 0, buffer.getNumSamples());
 
-    // InputGain/Ceiling/Release are cheap to update every block (smoothed
-    // internally by the engine). Lookahead is deliberately NOT re-applied
-    // here - see TruePeakLimiterEngine::setLookaheadMs() and prepareToPlay()
-    // above; changing it takes effect only on the next prepare() cycle.
+    // InputGain/Ceiling/Release/ReleaseCurve/Dither/ClipMix are all cheap to
+    // update every block (smoothed internally where audible, no allocation
+    // either way). Lookahead is deliberately NOT re-applied here - see
+    // TruePeakLimiterEngine::setLookaheadMs() and prepareToPlay() above;
+    // changing it takes effect only on the next prepare() cycle.
     engine.setInputGainDb (inputGainDb->load (std::memory_order_relaxed));
     engine.setCeilingDb (ceilingDb->load (std::memory_order_relaxed));
     engine.setReleaseMs (releaseMs->load (std::memory_order_relaxed));
+    engine.setReleaseCurve (static_cast<int> (releaseCurveChoice->load (std::memory_order_relaxed)));
+    engine.setDitherMode (static_cast<int> (ditherChoice->load (std::memory_order_relaxed)));
+    engine.setClipMixPercent (clipMixPercent->load (std::memory_order_relaxed));
 
     juce::dsp::AudioBlock<float> block (buffer);
     engine.process (block);

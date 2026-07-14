@@ -13,21 +13,33 @@ TEST_CASE ("State round-trip preserves non-default values of every parameter", "
     auto* ceilingParam = processor.apvts.getParameter (ParamIDs::ceiling);
     auto* releaseParam = processor.apvts.getParameter (ParamIDs::release);
     auto* lookaheadParam = processor.apvts.getParameter (ParamIDs::lookahead);
+    auto* releaseCurveParam = processor.apvts.getParameter (ParamIDs::releaseCurve);
+    auto* ditherParam = processor.apvts.getParameter (ParamIDs::dither);
+    auto* clipMixParam = processor.apvts.getParameter (ParamIDs::clipMix);
 
     REQUIRE (inputGainParam != nullptr);
     REQUIRE (ceilingParam != nullptr);
     REQUIRE (releaseParam != nullptr);
     REQUIRE (lookaheadParam != nullptr);
+    REQUIRE (releaseCurveParam != nullptr);
+    REQUIRE (ditherParam != nullptr);
+    REQUIRE (clipMixParam != nullptr);
 
     inputGainParam->setValueNotifyingHost (inputGainParam->convertTo0to1 (6.0f));
     ceilingParam->setValueNotifyingHost (ceilingParam->convertTo0to1 (-3.0f));
     releaseParam->setValueNotifyingHost (releaseParam->convertTo0to1 (200.0f));
     lookaheadParam->setValueNotifyingHost (lookaheadParam->convertTo0to1 (10.0f));
+    releaseCurveParam->setValueNotifyingHost (releaseCurveParam->convertTo0to1 (2.0f)); // "Smooth"
+    ditherParam->setValueNotifyingHost (ditherParam->convertTo0to1 (1.0f)); // "16-bit"
+    clipMixParam->setValueNotifyingHost (clipMixParam->convertTo0to1 (40.0f));
 
     const auto savedInputGain = inputGainParam->getValue();
     const auto savedCeiling = ceilingParam->getValue();
     const auto savedRelease = releaseParam->getValue();
     const auto savedLookahead = lookaheadParam->getValue();
+    const auto savedReleaseCurve = releaseCurveParam->getValue();
+    const auto savedDither = ditherParam->getValue();
+    const auto savedClipMix = clipMixParam->getValue();
 
     juce::MemoryBlock savedState;
     processor.getStateInformation (savedState);
@@ -39,11 +51,17 @@ TEST_CASE ("State round-trip preserves non-default values of every parameter", "
     ceilingParam->setValueNotifyingHost (ceilingParam->getDefaultValue());
     releaseParam->setValueNotifyingHost (releaseParam->getDefaultValue());
     lookaheadParam->setValueNotifyingHost (lookaheadParam->getDefaultValue());
+    releaseCurveParam->setValueNotifyingHost (releaseCurveParam->getDefaultValue());
+    ditherParam->setValueNotifyingHost (ditherParam->getDefaultValue());
+    clipMixParam->setValueNotifyingHost (clipMixParam->getDefaultValue());
 
     REQUIRE (inputGainParam->getValue() != Catch::Approx (savedInputGain));
     REQUIRE (ceilingParam->getValue() != Catch::Approx (savedCeiling));
     REQUIRE (releaseParam->getValue() != Catch::Approx (savedRelease));
     REQUIRE (lookaheadParam->getValue() != Catch::Approx (savedLookahead));
+    REQUIRE (releaseCurveParam->getValue() != Catch::Approx (savedReleaseCurve));
+    REQUIRE (ditherParam->getValue() != Catch::Approx (savedDither));
+    REQUIRE (clipMixParam->getValue() != Catch::Approx (savedClipMix));
 
     processor.setStateInformation (savedState.getData(), static_cast<int> (savedState.getSize()));
 
@@ -51,4 +69,7 @@ TEST_CASE ("State round-trip preserves non-default values of every parameter", "
     CHECK (ceilingParam->getValue() == Catch::Approx (savedCeiling).margin (1e-6));
     CHECK (releaseParam->getValue() == Catch::Approx (savedRelease).margin (1e-6));
     CHECK (lookaheadParam->getValue() == Catch::Approx (savedLookahead).margin (1e-6));
+    CHECK (releaseCurveParam->getValue() == Catch::Approx (savedReleaseCurve).margin (1e-6));
+    CHECK (ditherParam->getValue() == Catch::Approx (savedDither).margin (1e-6));
+    CHECK (clipMixParam->getValue() == Catch::Approx (savedClipMix).margin (1e-6));
 }

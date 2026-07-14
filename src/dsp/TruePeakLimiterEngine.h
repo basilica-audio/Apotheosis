@@ -2,6 +2,7 @@
 
 #include <juce_dsp/juce_dsp.h>
 
+#include <atomic>
 #include <vector>
 
 // The complete Apotheosis signal path, independent of juce::AudioProcessor
@@ -15,31 +16,60 @@
 //
 //   input -> Input Gain -> [4x oversampled: per-sample true-peak detection
 //         -> lookahead sliding-window-minimum gain envelope -> release
-//         smoothing -> apply gain to the lookahead-delayed signal -> hard
-//         ceiling clamp] -> output
+//         smoothing (selectable curve) -> apply gain / clip-mix blend to
+//         the lookahead-delayed signal -> hard ceiling clamp] -> Dither
+//         -> output
 //
 // Detection AND gain-reduction application both happen inside the same
 // oversampled domain (rather than detecting there and correcting at the
 // base rate), which is what makes the true-peak guarantee meaningful: the
 // gain multiply acts directly on the highest-resolution representation of
 // the signal, before it is filtered back down to the host's sample rate.
+//
+// Metering (gain reduction, output true peak, momentary/short-term/
+// integrated LUFS) is computed here too, published via relaxed atomics so a
+// future GUI (roadmap M3) can poll it from the message thread without any
+// lock/allocation on the audio thread.
 class TruePeakLimiterEngine
 {
 public:
+    // Selects the shape of the release ramp back towards unity gain once
+    // the required gain reduction starts decreasing. Attack is always
+    // instantaneous (via the lookahead minimum), regardless of this choice
+    // - only the release phase is affected. Indices match the "Release
+    // Curve" AudioParameterChoice (see ParameterLayout.cpp).
+    enum class ReleaseCurve
+    {
+        exponential = 0, // Classic one-pole ramp (the original v0.1 behaviour).
+        linear = 1,      // Constant-rate approach to the target gain.
+        smooth = 2,      // Two-stage (critically-damped) one-pole cascade: a softer, overshoot-free "S" onset, at the cost of a slower perceived release.
+    };
+
+    // Selects TPDF dither added at the very end of the chain, after
+    // downsampling back to the base rate - i.e. at the output word length,
+    // the conventional placement for dither. Indices match the "Dither"
+    // AudioParameterChoice.
+    enum class DitherMode
+    {
+        off = 0,
+        bit16 = 1,
+        bit24 = 2,
+    };
+
     TruePeakLimiterEngine();
 
     // Allocates all DSP state (oversampler, lookahead delay buffer,
-    // sliding-window-minimum ring buffer), sized for the CURRENT Lookahead
-    // parameter value (see setLookaheadMs()). Must be called (and
-    // completed) before the first process() call, and again whenever sample
-    // rate/block size/channel count change - or whenever Lookahead itself
-    // changes. Lookahead is therefore treated as a "setup" parameter:
-    // setLookaheadMs() only takes effect at the *next* prepare() call, not
-    // mid-stream, both because it changes the plugin's reported latency and
-    // because resizing these buffers is not real-time safe.
+    // sliding-window-minimum ring buffer, LUFS metering windows), sized for
+    // the CURRENT Lookahead parameter value (see setLookaheadMs()). Must be
+    // called (and completed) before the first process() call, and again
+    // whenever sample rate/block size/channel count change - or whenever
+    // Lookahead itself changes. Lookahead is therefore treated as a "setup"
+    // parameter: setLookaheadMs() only takes effect at the *next* prepare()
+    // call, not mid-stream, both because it changes the plugin's reported
+    // latency and because resizing these buffers is not real-time safe.
     void prepare (const juce::dsp::ProcessSpec& spec);
 
-    // Clears all oversampler/delay-line/envelope state without
+    // Clears all oversampler/delay-line/envelope/metering state without
     // deallocating. Safe to call from the audio thread.
     void reset();
 
@@ -51,18 +81,32 @@ public:
     // filter/envelope state indefinitely.
     void process (juce::dsp::AudioBlock<float>& block);
 
-    // Parameter setters, in real units. InputGain/Ceiling/Release are safe
-    // to call every block from the audio thread (smoothed internally,
-    // cheap, no allocation). Lookahead is latched at prepare() - see above.
+    // Parameter setters, in real units. InputGain/Ceiling/Release/ClipMix
+    // are safe to call every block from the audio thread (smoothed
+    // internally, cheap, no allocation). ReleaseCurve/Dither are cheap
+    // discrete-mode switches (no allocation, no buffer resize) also safe to
+    // call every block. Lookahead is latched at prepare() - see above.
     void setInputGainDb (float newInputGainDb);
     void setCeilingDb (float newCeilingDb);
     void setReleaseMs (float newReleaseMs);
     void setLookaheadMs (float newLookaheadMs);
+    void setReleaseCurve (int newReleaseCurveIndex) noexcept;
+    void setDitherMode (int newDitherModeIndex) noexcept;
+    void setClipMixPercent (float newClipMixPercent) noexcept;
 
     // Total reported latency in samples, valid after prepare() has run:
     // Lookahead (converted to samples at the prepared sample rate) plus the
     // 4x oversampler's own round-trip latency.
     int getLatencySamples() const noexcept { return totalLatencySamples; }
+
+    // Metering readout, safe to call from any thread (message thread GUI
+    // polling in particular). Values reflect the most recently processed
+    // non-empty block; they do not change on a zero-sample process() call.
+    float getGainReductionDb() const noexcept { return gainReductionDbAtomic.load (std::memory_order_relaxed); }
+    float getOutputTruePeakDb() const noexcept { return outputTruePeakDbAtomic.load (std::memory_order_relaxed); }
+    float getMomentaryLufs() const noexcept { return momentaryLufsAtomic.load (std::memory_order_relaxed); }
+    float getShortTermLufs() const noexcept { return shortTermLufsAtomic.load (std::memory_order_relaxed); }
+    float getIntegratedLufs() const noexcept { return integratedLufsAtomic.load (std::memory_order_relaxed); }
 
 private:
     static constexpr int oversamplingFactorPow2 = 2; // 2^2 = 4x oversampling
@@ -78,12 +122,31 @@ private:
     // margin being exactly right - see docs/architecture.md.
     static constexpr float headroomMarginDb = 0.3f;
 
+    // Additional headroom (dB, at Clip Mix = 100%, scaled linearly by the
+    // current Clip Mix amount) applied only to the tanh soft-clip "clipper"
+    // path's target, on top of headroomMarginDb. The clipper path generates
+    // new high-frequency harmonic content (unlike the linear gain-reduction
+    // path), which needs a little more margin against downsample
+    // reconstruction-filter ripple - see process(). Has zero effect at
+    // Clip Mix = 0%.
+    static constexpr float clipExtraHeadroomDb = 1.0f;
+
+    // LUFS metering absolute gate (ITU-R BS.1770-4): momentary loudness
+    // readings quieter than this are excluded from the Integrated Loudness
+    // accumulator. See docs/architecture.md for the documented deviations
+    // from the full two-pass relative-gated spec algorithm (this engine
+    // implements the absolute gate only, evaluated once per processed
+    // block rather than per 400ms gating block, for O(1) real-time-safe
+    // accumulation).
+    static constexpr float integratedGateLufs = -70.0f;
+
     double sampleRate = 44100.0;
 
     juce::dsp::Gain<float> inputGain;
     std::unique_ptr<juce::dsp::Oversampling<float>> oversampler;
 
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> ceilingSmoothed;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> clipMixSmoothed;
 
     // Lookahead delay buffer for the (oversampled) audio signal, sized and
     // latched at prepare() time.
@@ -113,6 +176,14 @@ private:
 
     // Release-smoothed gain-reduction state, in the oversampled domain.
     float currentGain = 1.0f;
+    // Second stage used only by ReleaseCurve::smooth (a two-pole cascade);
+    // kept in sync with currentGain on every attack so switching curves (or
+    // switching between attack/release) never reintroduces a stale lag.
+    float smoothReleaseStage = 1.0f;
+
+    ReleaseCurve releaseCurve = ReleaseCurve::exponential;
+    DitherMode ditherMode = DitherMode::off;
+    juce::Random ditherRng;
 
     // Last commanded values (ParameterLayout defaults until a setter is
     // called), re-applied on every prepare() so re-prepare (sample-rate
@@ -122,6 +193,46 @@ private:
     float lastCeilingDb = -1.0f;
     float lastReleaseMs = 50.0f;
     float lastLookaheadMs = 5.0f;
+    float lastClipMixPercent = 0.0f;
+
+    //==================================================================
+    // Metering state (published via atomics - see the public getters).
+    //==================================================================
+    std::atomic<float> gainReductionDbAtomic { 0.0f };
+    std::atomic<float> outputTruePeakDbAtomic { -100.0f };
+    std::atomic<float> momentaryLufsAtomic { -100.0f };
+    std::atomic<float> shortTermLufsAtomic { -100.0f };
+    std::atomic<float> integratedLufsAtomic { -100.0f };
+
+    // ITU-R BS.1770-4 K-weighting pre-filter: stage 1 (high shelf) then
+    // stage 2 (high pass), applied per channel at the BASE sample rate
+    // (i.e. after downsampling, on the actual output signal). Up to 2
+    // channels supported (mono/stereo - the only layouts this plugin
+    // accepts, see PluginProcessor::isBusesLayoutSupported).
+    juce::dsp::IIR::Filter<float> kWeightShelf[2];
+    juce::dsp::IIR::Filter<float> kWeightHighPass[2];
+
+    // Fixed-capacity sliding sum-of-squares window used for both the
+    // Momentary (400 ms) and Short-Term (3 s) LUFS meters. O(1) amortised
+    // per-sample push; capacity is fixed and allocated in prepare().
+    struct LoudnessWindow
+    {
+        std::vector<float> buffer;
+        int capacity = 1;
+        int writePos = 0;
+        int count = 0;
+        double runningSum = 0.0;
+
+        void prepare (int capacitySamples);
+        void reset();
+        double pushAndGetMeanPower (float power) noexcept;
+    };
+
+    LoudnessWindow momentaryWindow;
+    LoudnessWindow shortTermWindow;
+
+    double integratedPowerSum = 0.0;
+    juce::int64 integratedSampleCount = 0;
 
     float pushSlidingMin (float value) noexcept;
     float delayPushAndRead (int channel, float newSample) noexcept;

@@ -49,15 +49,16 @@ TEST_CASE ("Processor instantiates with the expected parameters", "[processor][p
     {
         static constexpr const char* allIds[] = {
             ParamIDs::inputGain, ParamIDs::ceiling, ParamIDs::release, ParamIDs::lookahead,
+            ParamIDs::releaseCurve, ParamIDs::dither, ParamIDs::clipMix,
         };
 
         for (const auto* id : allIds)
             CHECK (apvts.getParameter (id) != nullptr);
     }
 
-    SECTION ("total parameter count matches the v0.1 layout")
+    SECTION ("total parameter count matches the v0.1.0 layout")
     {
-        CHECK (apvts.processor.getParameters().size() == 4);
+        CHECK (apvts.processor.getParameters().size() == 7);
     }
 
     SECTION ("Input Gain: defaults and range")
@@ -82,5 +83,33 @@ TEST_CASE ("Processor instantiates with the expected parameters", "[processor][p
     {
         checkFloatDefault (apvts, ParamIDs::lookahead, 5.0f);
         checkFloatRange (apvts, ParamIDs::lookahead, 0.1f, 20.0f);
+    }
+
+    SECTION ("Release Curve: default index and choices")
+    {
+        auto* param = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (ParamIDs::releaseCurve));
+        REQUIRE (param != nullptr);
+        CHECK (param->getIndex() == 0);
+        CHECK (param->choices.size() == 3);
+        CHECK (param->choices[0] == "Exponential");
+        CHECK (param->choices[1] == "Linear");
+        CHECK (param->choices[2] == "Smooth");
+    }
+
+    SECTION ("Dither: default index and choices")
+    {
+        auto* param = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (ParamIDs::dither));
+        REQUIRE (param != nullptr);
+        CHECK (param->getIndex() == 0);
+        CHECK (param->choices.size() == 3);
+        CHECK (param->choices[0] == "Off");
+        CHECK (param->choices[1] == "16-bit");
+        CHECK (param->choices[2] == "24-bit");
+    }
+
+    SECTION ("Clip Mix: defaults and range")
+    {
+        checkFloatDefault (apvts, ParamIDs::clipMix, 0.0f);
+        checkFloatRange (apvts, ParamIDs::clipMix, 0.0f, 100.0f);
     }
 }

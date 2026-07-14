@@ -32,4 +32,22 @@ namespace ParamIDs
     // parameter: changes take effect at the next prepare() cycle rather
     // than live mid-stream (see TruePeakLimiterEngine::setLookaheadMs).
     inline constexpr auto lookahead = "lookahead";
+
+    // Release curve shape: Exponential (classic one-pole, default) / Linear
+    // / Smooth (two-stage cascade). Only shapes the release (increasing-
+    // gain) phase - attack is always instantaneous via the lookahead
+    // minimum, regardless of this choice.
+    inline constexpr auto releaseCurve = "releaseCurve";
+
+    // Output dither: Off (default, bit-identical to no dither) / 16-bit /
+    // 24-bit TPDF, added after downsampling at the output word length.
+    inline constexpr auto dither = "dither";
+
+    // Clip Mix: blends the transparent gain-reduction limiter path (0%,
+    // default) with an alternate tanh soft-clip "clipper" path (100%)
+    // applied directly to the lookahead-delayed signal. Both paths (and
+    // every blend between them) still pass through the same final hard
+    // ceiling clamp, so the never-exceed-ceiling guarantee holds at any
+    // Clip Mix setting.
+    inline constexpr auto clipMix = "clipMix";
 }
