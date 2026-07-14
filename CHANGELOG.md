@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-14
+
+### Fixed
+
+- Release Curve and Dither combo boxes rendered empty because `ComboBoxAttachment` does not auto-populate items from `AudioParameterChoice`; the editor now explicitly populates both boxes from the live APVTS parameter's `getAllValueStrings()` before attaching.
+
 ## [0.1.0] - 2026-07-14
 
 ### Added
