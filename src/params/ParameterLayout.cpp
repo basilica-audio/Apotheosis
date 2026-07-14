@@ -71,6 +71,38 @@ namespace tbst
             5.0f,
             juce::AudioParameterFloatAttributes().withLabel ("ms")));
 
+        //======================================================================
+        // Release Curve: shapes the release (increasing-gain) phase only -
+        // attack remains instantaneous via the lookahead minimum regardless
+        // of this choice. Default index 0 (Exponential) matches the
+        // original v0.1 one-pole behaviour.
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { ParamIDs::releaseCurve, 1 },
+            "Release Curve",
+            juce::StringArray { "Exponential", "Linear", "Smooth" },
+            0));
+
+        //======================================================================
+        // Dither: TPDF dither added after downsampling, at the output word
+        // length. Default index 0 (Off) is bit-identical to the pre-dither
+        // signal path.
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { ParamIDs::dither, 1 },
+            "Dither",
+            juce::StringArray { "Off", "16-bit", "24-bit" },
+            0));
+
+        //======================================================================
+        // Clip Mix: blends the transparent limiter path (0%, default) with
+        // an alternate tanh soft-clip "clipper" path (100%). See
+        // ParamIDs::clipMix and TruePeakLimiterEngine::process().
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { ParamIDs::clipMix, 1 },
+            "Clip Mix",
+            juce::NormalisableRange<float> (0.0f, 100.0f, 0.01f),
+            0.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("%")));
+
         return layout;
     }
 }

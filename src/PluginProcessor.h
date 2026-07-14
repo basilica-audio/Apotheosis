@@ -50,6 +50,15 @@ public:
 
     juce::AudioProcessorValueTreeState apvts;
 
+    // Metering readout for a future GUI (roadmap M3) or any other message-
+    // thread consumer; safe to poll from any thread (relaxed atomics owned
+    // by the engine, updated once per processed block).
+    float getGainReductionDb() const noexcept { return engine.getGainReductionDb(); }
+    float getOutputTruePeakDb() const noexcept { return engine.getOutputTruePeakDb(); }
+    float getMomentaryLufs() const noexcept { return engine.getMomentaryLufs(); }
+    float getShortTermLufs() const noexcept { return engine.getShortTermLufs(); }
+    float getIntegratedLufs() const noexcept { return engine.getIntegratedLufs(); }
+
 private:
     TruePeakLimiterEngine engine;
 
@@ -60,6 +69,9 @@ private:
     std::atomic<float>* ceilingDb = nullptr;
     std::atomic<float>* releaseMs = nullptr;
     std::atomic<float>* lookaheadMs = nullptr;
+    std::atomic<float>* releaseCurveChoice = nullptr;
+    std::atomic<float>* ditherChoice = nullptr;
+    std::atomic<float>* clipMixPercent = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ApotheosisAudioProcessor)
 };
