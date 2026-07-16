@@ -198,18 +198,44 @@ TEST_CASE ("reset() followed by processBlock does not crash", "[robustness]")
     CHECK (TestHelpers::allSamplesFinite (buffer));
 }
 
-TEST_CASE ("Block size larger than prepared maximum is handled defensively", "[robustness]")
+TEST_CASE ("Block size larger than prepared maximum is chunked, not passed straight into the oversampler", "[robustness]")
 {
     ApotheosisAudioProcessor processor;
     processor.prepareToPlay (48000.0, 256);
 
-    // Some hosts occasionally hand over a block larger than promised
-    // (e.g. offline bounce). Not asserting on the result content here -
-    // the oversampler is only sized for 256 - but the call must not crash.
-    juce::AudioBuffer<float> buffer (2, 256);
-    TestHelpers::fillWithSine (buffer, 48000.0, 1000.0, 0.5f);
+    constexpr float ceilingDb = -1.0f;
+    setParam (processor, ParamIDs::ceiling, ceilingDb);
+    setParam (processor, ParamIDs::release, 20.0f);
+
+    // Some hosts occasionally hand over a block larger than promised at
+    // prepareToPlay() (e.g. offline bounce/render, buffer-size
+    // renegotiation - see issue #14). 700 is deliberately not a multiple of
+    // the prepared 256-sample maximum, so process()'s chunking loop is also
+    // exercised on a partial final chunk.
+    constexpr int numSamples = 700;
+    static_assert (numSamples > 256, "must actually exceed the prepared maximum - see issue #15");
+
+    juce::AudioBuffer<float> buffer (2, numSamples);
+    TestHelpers::fillWithSine (buffer, 48000.0, 1000.0, 0.9f);
     juce::MidiBuffer midi;
 
+    // Before issue #14 was fixed, TruePeakLimiterEngine::process() passed
+    // this oversized block straight into juce::dsp::Oversampling, whose
+    // internal buffer juce::dsp::Oversampling::initProcessing() sized for
+    // at most 256 samples at prepareToPlay() time; every processSamplesUp/
+    // Down override guards its writes past that only with a debug-only
+    // jassert (Release: silent heap corruption with no exception to catch;
+    // Debug: an assertion failure). CHECK_NOTHROW alone would therefore not
+    // reliably have caught the bug even pre-fix (see issue #15), so this
+    // also pins down the actual output: fully finite and still respecting
+    // the ceiling, exactly as a correctly chunked call must.
     CHECK_NOTHROW (processor.processBlock (buffer, midi));
+
     CHECK (TestHelpers::allSamplesFinite (buffer));
+
+    const auto ceilingLinear = juce::Decibels::decibelsToGain (ceilingDb);
+    constexpr float toleranceDb = 0.5f; // see LimiterTests.cpp for rationale
+    const auto toleranceLinear = ceilingLinear * juce::Decibels::decibelsToGain (toleranceDb);
+
+    CHECK (TestHelpers::peakAbsolute (buffer) <= toleranceLinear);
 }

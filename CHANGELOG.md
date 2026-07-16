@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Audio-thread safety (#14):** `TruePeakLimiterEngine::process()` now chunks any incoming block larger than the `maximumBlockSize` declared to `prepare()` down into prepare()-sized sub-blocks before handing them to `juce::dsp::Oversampling`, instead of passing an oversized block straight through. `juce::dsp::Oversampling`'s internal buffer is sized to exactly that maximum at prepare()-time, and every `processSamplesUp`/`processSamplesDown` override only guards its writes with a debug-only `jassert` (compiled out under `NDEBUG`/Release) - so an oversized block (offline bounce/render, host buffer-size renegotiation) previously risked silent heap corruption in a Release AU/VST3 build.
+- **Tests (#15):** `RobustnessTests.cpp`'s "block size larger than prepared maximum" test previously constructed a buffer exactly matching (not exceeding) the prepared maximum, so it never exercised the oversized-block path fixed above. It now prepares at 256 samples and processes a 700-sample block, and also asserts the ceiling guarantee still holds on the result (not just `CHECK_NOTHROW`, which would not reliably catch silent heap corruption).
+- **Dither ceiling overshoot (#9):** dither (16-bit/24-bit TPDF) was added after the final oversampled-domain ceiling clamp and after downsampling, with no subsequent clamp - a base-rate output sample could exceed the nominal Ceiling by up to ~1 LSB. Dither is now re-clamped to the same Ceiling immediately after being applied, so the never-exceed-Ceiling guarantee holds with dither on too. Most noticeable at very low Ceiling settings, where the (proportional) headroom margin shrinks below dither's fixed absolute LSB size.
+
 ## [0.1.1] - 2026-07-14
 
 ### Fixed
