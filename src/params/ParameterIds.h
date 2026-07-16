@@ -50,4 +50,42 @@ namespace ParamIDs
     // ceiling clamp, so the never-exceed-ceiling guarantee holds at any
     // Clip Mix setting.
     inline constexpr auto clipMix = "clipMix";
+
+    // v0.2.0 deep-dive additions (docs/design-brief.md) - ADDITIVE ONLY.
+    // Every one of the four IDs below defaults to the value that reproduces
+    // v1's exact prior behaviour, so old (v1) saved state loading with none
+    // of these IDs present falls back to a bit-identical-to-v1 result (see
+    // docs/design-brief.md's Guarantee 1/7 and tests/RegressionTests.cpp,
+    // tests/StateMigrationTests.cpp). IDs frozen as of v0.2.0, same
+    // never-rename contract as the block above.
+
+    // Attack: transient/sustain classifier window, 0-50 ms, default 0 ms.
+    // At 0 ms every gain-reduction event is classified "sustained" and
+    // routed through the normal Release-governed path exactly as in v1 -
+    // NOT a gain-reduction ramp (this is not a compressor retrofit). See
+    // TruePeakLimiterEngine::setAttackMs.
+    inline constexpr auto attack = "attack";
+
+    // Auto Release: program-dependent release-time modulator, 0-100%,
+    // default 0%. At 0% the modulator is a no-op and Release behaves
+    // exactly as in v1 for every Release Curve choice. Above 0%, blends in
+    // a slow (multi-second) gain-reduction-history-biased modulation of the
+    // *effective* Release time fed into the existing curve state machine -
+    // this project's own reasoned design, not a copy of any vendor's
+    // proprietary IRC/ARC algorithm. See
+    // TruePeakLimiterEngine::setAutoReleasePercent.
+    inline constexpr auto autoRelease = "autoRelease";
+
+    // Stereo Link: true-peak detector linking amount, 0-100%, default 100%.
+    // 100% (default) reproduces v1's only behaviour - max-linked detection
+    // across channels - exactly. 0% detects and limits each channel fully
+    // independently. See TruePeakLimiterEngine::setStereoLinkPercent.
+    inline constexpr auto stereoLink = "stereoLink";
+
+    // Dither Shape: Flat (default, v1's existing plain TPDF, bit-identical)
+    // / Shaped (a fixed noise-shaping filter pushing quantisation noise
+    // toward the top of the audible band). Only has an audible effect when
+    // `dither` (bit depth) is not Off. See
+    // TruePeakLimiterEngine::setDitherShape.
+    inline constexpr auto ditherShape = "ditherShape";
 }

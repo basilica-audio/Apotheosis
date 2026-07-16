@@ -1,0 +1,20 @@
+{
+    "format": "basilica-preset-1",
+    "plugin": "com.yvesvogl.apotheosis",
+    "pluginVersion": "0.2.0",
+    "name": "Wide Image Preserve",
+    "category": "Master",
+    "parameters": {
+        "inputGain": 0.0,
+        "ceiling": -1.0,
+        "release": 60.0,
+        "lookahead": 5.0,
+        "releaseCurve": 2,
+        "dither": 0,
+        "clipMix": 0.0,
+        "attack": 5.0,
+        "autoRelease": 20.0,
+        "stereoLink": 40.0,
+        "ditherShape": 0
+    }
+}

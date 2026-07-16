@@ -1,0 +1,20 @@
+{
+    "format": "basilica-preset-1",
+    "plugin": "com.yvesvogl.apotheosis",
+    "pluginVersion": "0.2.0",
+    "name": "Clean Export (Dithered)",
+    "category": "Master",
+    "parameters": {
+        "inputGain": 0.0,
+        "ceiling": -1.0,
+        "release": 50.0,
+        "lookahead": 5.0,
+        "releaseCurve": 0,
+        "dither": 1,
+        "clipMix": 0.0,
+        "attack": 0.0,
+        "autoRelease": 0.0,
+        "stereoLink": 100.0,
+        "ditherShape": 1
+    }
+}

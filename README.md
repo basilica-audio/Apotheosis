@@ -14,35 +14,39 @@
 
 Apotheosis is a lookahead brickwall **true-peak limiter** for the master bus, built on JUCE 8. It is the final gate before export: input gain drives an oversampled true-peak detector, a lookahead delay makes the resulting gain reduction instantaneous (no attack transient) rather than reactive, and a smooth release relaxes it back once the peak has passed. The output's true (inter-sample) peak never exceeds the Ceiling.
 
-## Features (v0.1.0 scope)
+## Features (v0.2.0 scope)
 
 - **Input Gain** - -12 to +24 dB trim into the limiter
 - **Ceiling** - -12 to 0 dBTP true-peak target, default -1.0 dBTP (conventional mastering safety margin)
-- **True-peak detection** - 4x oversampled, so inter-sample peaks the naked sample stream would hide are caught and limited, not just sample-domain peaks
+- **True-peak detection** - 4x oversampled, so inter-sample peaks the naked sample stream would hide are caught and limited, not just sample-domain peaks; per-channel, **Stereo Link**-weighted (0-100%, default 100% fully max-linked)
 - **Lookahead** - 0.1-20 ms; the mechanism that makes gain-reduction attack instantaneous and click-free rather than a reactive time constant
+- **Attack** - 0-50 ms, default 0 ms; a transient/sustain *classifier* (not a ramp) - short gain-reduction events recover near-instantly, longer ones follow Release
 - **Release** - 5-1000 ms, log-mapped, how quickly gain reduction relaxes back towards unity
+- **Auto Release** - 0-100%, default 0%; program-dependent modulation of the effective Release time from recent gain-reduction depth
 - **Release Curve** - Exponential / Linear / Smooth, shaping the release phase only (attack always stays instantaneous)
 - **Clip Mix** - 0-100% blend between the transparent limiter path and an alternate tanh soft-clip "clipper" character, both backed by the same never-exceed-ceiling guarantee
-- **Dither** - Off / 16-bit / 24-bit TPDF dither at the output word length
+- **Dither** - Off / 16-bit / 24-bit TPDF dither at the output word length, crossed with **Dither Shape** (Flat / Shaped)
 - **Metering (engine-side)** - gain reduction, output true peak, and Momentary/Short-Term/Integrated LUFS, published via the processor for a future GUI or any host/test harness
-- Full state save/recall via `AudioProcessorValueTreeState`
+- **Presets** - eight factory presets, user save/load/import/export (single files and zip banks), German-localised preset bar interface
+- Full state save/recall via `AudioProcessorValueTreeState`, with backward-tolerant migration from v0.1's seven-parameter state
 
 ## Signal flow
 
 ```
-Input --> Input Gain --> [4x oversampled] true-peak detect --> lookahead min-gain envelope --> Release (curve-shaped)
+Input --> Input Gain --> [4x oversampled] true-peak detect (Stereo Link) --> lookahead min-gain envelope
+                                    --> Attack classifier --> Release (curve-shaped, Auto Release-modulated)
                                                                                                        |
-             Output <-- Dither <-- ceiling clamp <-- Clip Mix blend <-- apply gain to lookahead-delayed signal <--+
+     Output <-- Dither (Flat/Shaped) <-- ceiling clamp <-- Clip Mix blend <-- apply gain to lookahead-delayed signal <--+
 ```
 
-See [`docs/manual.md`](docs/manual.md) for the full parameter reference and usage tips, and [`docs/architecture.md`](docs/architecture.md) for the engineering breakdown, including the lookahead/release mechanism, the latency model, and the internal headroom-margin rationale.
+See [`docs/manual.md`](docs/manual.md) for the full parameter reference and usage tips, and [`docs/architecture.md`](docs/architecture.md) for the engineering breakdown, including the lookahead/release mechanism, the latency model, and the internal headroom-margin rationale. New in v0.2.0: research-derived voicing additions sourced in [`docs/design-brief.md`](docs/design-brief.md)/[`docs/research-notes.md`](docs/research-notes.md), and the preset system documented in [`docs/presets.md`](docs/presets.md).
 
 ## Roadmap
 
 | Milestone | Description | Status |
 |---|---|---|
 | M1 | DSP completion & test coverage - Release Curve, Dither, Clip Mix, metering, broadened Catch2 suite | Done |
-| M2 | Presets & state recall | Planned |
+| M2 | Deep-dive voicing rework (Attack, Auto Release, Stereo Link, Dither Shape) & presets/state recall | Done |
 | M3 | Custom GUI & accessibility | Planned |
 | M4 | Release engineering - signing, notarization, installers, v1.0.0 | Planned |
 <!-- ==END BODY== -->

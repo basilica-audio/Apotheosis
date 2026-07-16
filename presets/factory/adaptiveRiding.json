@@ -1,0 +1,20 @@
+{
+    "format": "basilica-preset-1",
+    "plugin": "com.yvesvogl.apotheosis",
+    "pluginVersion": "0.2.0",
+    "name": "Adaptive Riding",
+    "category": "Master",
+    "parameters": {
+        "inputGain": 0.0,
+        "ceiling": -1.0,
+        "release": 80.0,
+        "lookahead": 5.0,
+        "releaseCurve": 0,
+        "dither": 0,
+        "clipMix": 0.0,
+        "attack": 0.0,
+        "autoRelease": 100.0,
+        "stereoLink": 100.0,
+        "ditherShape": 0
+    }
+}

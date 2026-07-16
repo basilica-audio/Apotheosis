@@ -1,0 +1,20 @@
+{
+    "format": "basilica-preset-1",
+    "plugin": "com.yvesvogl.apotheosis",
+    "pluginVersion": "0.2.0",
+    "name": "Punchy Master",
+    "category": "Master",
+    "parameters": {
+        "inputGain": 3.0,
+        "ceiling": -1.0,
+        "release": 20.0,
+        "lookahead": 1.0,
+        "releaseCurve": 0,
+        "dither": 0,
+        "clipMix": 0.0,
+        "attack": 25.0,
+        "autoRelease": 30.0,
+        "stereoLink": 100.0,
+        "ditherShape": 0
+    }
+}
