@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Audio-thread safety (#14):** `TruePeakLimiterEngine::process()` now chunks any incoming block larger than the `maximumBlockSize` declared to `prepare()` down into prepare()-sized sub-blocks before handing them to `juce::dsp::Oversampling`, instead of passing an oversized block straight through. `juce::dsp::Oversampling`'s internal buffer is sized to exactly that maximum at prepare()-time, and every `processSamplesUp`/`processSamplesDown` override only guards its writes with a debug-only `jassert` (compiled out under `NDEBUG`/Release) - so an oversized block (offline bounce/render, host buffer-size renegotiation) previously risked silent heap corruption in a Release AU/VST3 build.
+
 ## [0.1.1] - 2026-07-14
 
 ### Fixed

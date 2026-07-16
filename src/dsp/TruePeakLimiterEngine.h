@@ -73,12 +73,22 @@ public:
     // deallocating. Safe to call from the audio thread.
     void reset();
 
-    // Processes `block` in place. `block` must have at most the maximum
-    // sample/channel counts declared to prepare(); a zero-sample block is a
-    // safe no-op. No allocation occurs here. Non-finite (NaN/Inf) input
-    // samples are sanitised to 0 before entering the oversampler, so a
-    // momentarily broken upstream signal can never poison the internal
-    // filter/envelope state indefinitely.
+    // Processes `block` in place. A zero-sample block is a safe no-op. No
+    // allocation occurs here. Non-finite (NaN/Inf) input samples are
+    // sanitised to 0 before entering the oversampler, so a momentarily
+    // broken upstream signal can never poison the internal filter/envelope
+    // state indefinitely.
+    //
+    // `block` may contain MORE samples than the maximumBlockSize declared
+    // to prepare() (some hosts occasionally hand over an oversized block -
+    // offline bounce/render, buffer-size renegotiation - see issue #14):
+    // juce::dsp::Oversampling's internal buffer is sized to exactly that
+    // maximum at prepare()-time and only guards its writes with a
+    // debug-only jassert, so passing an oversized block straight through
+    // would silently corrupt the heap in a Release build. process() detects
+    // this and transparently loops over prepare()-sized chunks instead (see
+    // processChunk() below) rather than truncating the block, so the
+    // never-exceed-Ceiling guarantee still holds for every sample.
     void process (juce::dsp::AudioBlock<float>& block);
 
     // Parameter setters, in real units. InputGain/Ceiling/Release/ClipMix
@@ -141,6 +151,14 @@ private:
     static constexpr float integratedGateLufs = -70.0f;
 
     double sampleRate = 44100.0;
+
+    // The maximumBlockSize declared to prepare() - i.e. the largest sample
+    // count the oversampler's internal buffer (and every other prepare()-
+    // sized buffer below) was actually allocated for. process() chunks any
+    // larger incoming block down to this size before calling processChunk()
+    // - see process()'s doc comment and issue #14. Always >= 1 once
+    // prepare() has run.
+    size_t maxPreparedBlockSamples = 0;
 
     juce::dsp::Gain<float> inputGain;
     std::unique_ptr<juce::dsp::Oversampling<float>> oversampler;
@@ -233,6 +251,15 @@ private:
 
     double integratedPowerSum = 0.0;
     juce::int64 integratedSampleCount = 0;
+
+    // Does the actual per-chunk work formerly done directly inside
+    // process(): `block` here is guaranteed by process() to be no larger
+    // than maxPreparedBlockSamples. All per-sample state (gain envelope,
+    // lookahead delay/sliding-window, LUFS accumulators, dither RNG) lives
+    // in member variables, so calling this repeatedly across sub-block
+    // chunks of one oversized block is equivalent to a single call with the
+    // full block.
+    void processChunk (juce::dsp::AudioBlock<float>& block);
 
     float pushSlidingMin (float value) noexcept;
     float delayPushAndRead (int channel, float newSample) noexcept;

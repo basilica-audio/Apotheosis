@@ -56,6 +56,10 @@ void TruePeakLimiterEngine::prepare (const juce::dsp::ProcessSpec& spec)
         true);
     oversampler->initProcessing (static_cast<size_t> (spec.maximumBlockSize));
 
+    // Never 0, so process()'s chunking loop below can't divide the block
+    // into zero-sized (i.e. infinite) chunks - see issue #14.
+    maxPreparedBlockSamples = juce::jmax (static_cast<size_t> (1), static_cast<size_t> (spec.maximumBlockSize));
+
     const auto detectionLatencySamplesBase = static_cast<int> (std::round (oversampler->getLatencyInSamples()));
 
     // Lookahead is latched here (not re-read in process()) because it both
@@ -252,6 +256,37 @@ void TruePeakLimiterEngine::process (juce::dsp::AudioBlock<float>& block)
     if (numSamples == 0)
         return;
 
+    if (numSamples <= maxPreparedBlockSamples)
+    {
+        processChunk (block);
+        return;
+    }
+
+    // Oversized block (larger than the maximumBlockSize declared to
+    // prepare()) - see process()'s doc comment and issue #14. Chunk it down
+    // rather than truncating: juce::dsp::Oversampling's internal buffer is
+    // sized to exactly maxPreparedBlockSamples * oversamplingFactor samples,
+    // and every processSamplesUp/Down override only guards its unchecked
+    // writes with a debug-only jassert (compiled to nothing in Release), so
+    // passing an oversized block straight through would silently corrupt
+    // the heap. Truncating instead of chunking would be simpler but wrong
+    // for a *limiter* specifically: any samples left unprocessed would pass
+    // through unclamped, raw, and un-ceiling-limited, defeating the very
+    // guarantee this engine exists to provide.
+    size_t position = 0;
+
+    while (position < numSamples)
+    {
+        const auto chunkSize = juce::jmin (maxPreparedBlockSamples, numSamples - position);
+        auto chunk = block.getSubBlock (position, chunkSize);
+        processChunk (chunk);
+        position += chunkSize;
+    }
+}
+
+void TruePeakLimiterEngine::processChunk (juce::dsp::AudioBlock<float>& block)
+{
+    const auto numSamples = block.getNumSamples();
     const auto numChannels = block.getNumChannels();
 
     // Sanitise non-finite input up front: NaN/Inf entering the oversampler's
