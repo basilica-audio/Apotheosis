@@ -216,6 +216,67 @@ TEST_CASE ("Dither does not break the never-exceed-ceiling guarantee beyond the 
     CHECK (outputTruePeak <= toleranceLinear);
 }
 
+TEST_CASE ("Dither never pushes a base-rate sample past the exact nominal Ceiling (issue #9)", "[dsp][dither][truepeak]")
+{
+    // Unlike the test above (which uses the project's usual 0.5 dB
+    // true-peak/reconstruction-filter tolerance), this checks the exact
+    // base-rate sample values dither is applied to, with no dB-scale slack
+    // - only float-rounding epsilon. Dither's per-sample TPDF amplitude is
+    // <= 1 LSB (2^-15 for 16-bit, ~3e-5 linear absolute, NOT relative to
+    // Ceiling), so the ~0.5 dB tolerance used elsewhere in this suite would
+    // never have caught it exceeding the ceiling - exactly how this went
+    // unnoticed until the dedicated review finding.
+    //
+    // headroomMarginDb (the gap process() targets below Ceiling) is a
+    // roughly *proportional* margin, so it shrinks in absolute terms as
+    // Ceiling gets quieter, while ditherLsb stays a *fixed* absolute size
+    // (it's set by the output word length, not by Ceiling). A very low
+    // Ceiling (as a mastering engineer might use for a quiet intro/outro
+    // section, or any low-level passage) is therefore exactly where the
+    // absolute margin shrinks below ditherLsb and this bug was reachable in
+    // practice - confirmed empirically: at -90 dBFS Ceiling the natural
+    // (dither-off) margin to Ceiling is under 0.1 LSB, so 16-bit dither's
+    // TPDF range (up to ~1 LSB) reliably pushes the post-downsample peak
+    // past Ceiling pre-fix, consistently across many runs/RNG seeds.
+    TruePeakLimiterEngine engine;
+
+    constexpr double sampleRate = 48000.0;
+    constexpr int numSamples = 4096;
+    const juce::dsp::ProcessSpec spec { sampleRate, static_cast<juce::uint32> (numSamples), 2 };
+    engine.prepare (spec);
+
+    constexpr float ceilingDb = -90.0f;
+    engine.setCeilingDb (ceilingDb);
+    engine.setDitherMode (1); // 16-bit - the larger of the two dither amplitudes
+
+    // Near-Nyquist tone (inter-sample-peak-rich, same shape as this suite's
+    // other true-peak tests), at an amplitude that needs real gain
+    // reduction so the limiter is actively driving the signal down towards
+    // (the now very quiet) Ceiling rather than passing it through untouched.
+    juce::AudioBuffer<float> input (2, numSamples);
+    TestHelpers::fillWithSine (input, sampleRate, sampleRate * 0.45, 0.98f);
+
+    juce::AudioBuffer<float> processed;
+
+    for (int i = 0; i < 4; ++i)
+    {
+        processed.makeCopyOf (input);
+        juce::dsp::AudioBlock<float> block (processed);
+        engine.process (block);
+    }
+
+    REQUIRE (TestHelpers::allSamplesFinite (processed));
+
+    const auto ceilingLinear = juce::Decibels::decibelsToGain (ceilingDb);
+
+    // Epsilon is a small fraction of ditherLsb (2^-15) - comfortably above
+    // float rounding noise at this magnitude, comfortably below the ~1 LSB
+    // overshoot this test guards against.
+    const auto epsilon = std::exp2 (-15.0f) * 0.1f;
+
+    CHECK (TestHelpers::peakAbsolute (processed) <= ceilingLinear + epsilon);
+}
+
 //==============================================================================
 // Clip Mix
 //==============================================================================

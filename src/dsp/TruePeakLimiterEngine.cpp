@@ -478,12 +478,17 @@ void TruePeakLimiterEngine::processChunk (juce::dsp::AudioBlock<float>& block)
     //==================================================================
     // Dither: TPDF noise added at the very end, after downsampling, at the
     // output word length - the conventional placement. Off by default
-    // (bit-identical to the pre-dither signal path). Added before the
+    // (bit-identical to the pre-dither signal path). Added after the
     // ceiling backstop was already applied above (in the oversampled
     // domain), so this operates purely at the base rate on the final
-    // output samples; its amplitude (<= 1 LSB at 16/24-bit) is far below
-    // the true-peak measurement tolerance used by this project's own tests
-    // and is standard mastering-limiter practice.
+    // output samples. Its amplitude (<= 1 LSB at 16/24-bit) is far below
+    // the true-peak measurement tolerance used by this project's own
+    // truepeak tests, but it can still nudge a sample that is already
+    // sitting exactly at the oversampled-domain clamp's ceiling up to ~1
+    // LSB past the nominal Ceiling at the base rate - see issue #9. Re-
+    // clamping to the same ceilingLinear used by that earlier clamp keeps
+    // the "never exceeds Ceiling" guarantee true after dither too, at
+    // negligible cost (this loop already visits every sample).
     //==================================================================
     if (ditherMode != DitherMode::off)
     {
@@ -496,7 +501,8 @@ void TruePeakLimiterEngine::processChunk (juce::dsp::AudioBlock<float>& block)
             for (size_t sample = 0; sample < numSamples; ++sample)
             {
                 const auto tpdf = ditherRng.nextFloat() - ditherRng.nextFloat();
-                data[sample] += tpdf * ditherLsb;
+                const auto dithered = data[sample] + tpdf * ditherLsb;
+                data[sample] = juce::jlimit (-ceilingLinear, ceilingLinear, dithered);
             }
         }
     }
