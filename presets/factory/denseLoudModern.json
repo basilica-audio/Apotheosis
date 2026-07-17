@@ -1,0 +1,20 @@
+{
+    "format": "basilica-preset-1",
+    "plugin": "com.yvesvogl.apotheosis",
+    "pluginVersion": "0.2.0",
+    "name": "Dense/Loud Modern",
+    "category": "Master",
+    "parameters": {
+        "inputGain": 6.0,
+        "ceiling": -1.0,
+        "release": 30.0,
+        "lookahead": 3.0,
+        "releaseCurve": 2,
+        "dither": 0,
+        "clipMix": 35.0,
+        "attack": 10.0,
+        "autoRelease": 50.0,
+        "stereoLink": 100.0,
+        "ditherShape": 0
+    }
+}

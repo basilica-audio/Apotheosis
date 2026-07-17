@@ -4,6 +4,7 @@
 #include <juce_dsp/juce_dsp.h>
 
 #include "dsp/TruePeakLimiterEngine.h"
+#include "presets/PresetManager.h"
 
 // Apotheosis: a lookahead brickwall true-peak limiter. Signal flow lives in
 // TruePeakLimiterEngine (src/dsp) so it stays unit-testable independent of
@@ -50,6 +51,14 @@ public:
 
     juce::AudioProcessorValueTreeState apvts;
 
+    // M2 preset system (.scaffold/specs/preset-system-m2.md,
+    // src/presets/PresetManager.h). Constructed after apvts (its
+    // constructor registers APVTS parameter listeners) and public so
+    // ApotheosisAudioProcessorEditor's PresetBar can talk to it directly -
+    // the same "processor owns it, editor references it" pattern apvts
+    // itself already uses.
+    basilica::presets::PresetManager presetManager;
+
     // Metering readout for a future GUI (roadmap M3) or any other message-
     // thread consumer; safe to poll from any thread (relaxed atomics owned
     // by the engine, updated once per processed block).
@@ -72,6 +81,12 @@ private:
     std::atomic<float>* releaseCurveChoice = nullptr;
     std::atomic<float>* ditherChoice = nullptr;
     std::atomic<float>* clipMixPercent = nullptr;
+
+    // v0.2.0 deep-dive additions (docs/design-brief.md).
+    std::atomic<float>* attackMs = nullptr;
+    std::atomic<float>* autoReleasePercent = nullptr;
+    std::atomic<float>* stereoLinkPercent = nullptr;
+    std::atomic<float>* ditherShapeChoice = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ApotheosisAudioProcessor)
 };

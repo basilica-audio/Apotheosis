@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-16
+
+### Added
+
+- **Deep-dive rework (research-derived voicing, `docs/design-brief.md`/`docs/research-notes.md`):** four new controls closing documented feature gaps against the software reference class, sourced from public help/manual documentation and general DSP literature - **not measured, benchmarked, or reverse-engineered against any competitor's actual binary/DSP**. Every new control's default reproduces v1's exact prior output bit-for-bit (`tests/RegressionTests.cpp`) - none of them change what Apotheosis sounds like unless deliberately moved:
+  - **Attack** (0-50 ms, default 0 ms): a transient/sustain *classifier* (not a gain-reduction ramp) - short gain-reduction events recover via a fixed, near-instant coefficient regardless of Release/Release Curve/Auto Release; longer events use the normal Release-governed path. At 0 ms every event is classified "sustained" - bit-identical to v1.
+  - **Auto Release** (0-100%, default 0%): program-dependent modulation of the *effective* Release time from a slow (multi-second), asymmetric running average of recent gain-reduction depth - a from-scratch, reasoned implementation of the reference class's documented qualitative principle, **not a copy of any vendor's proprietary IRC/ARC algorithm**. No-op at 0%.
+  - **Stereo Link** (0-100%, default 100%): crossfades each channel's true-peak detector input between fully max-linked (v1's only behaviour) and fully independent per-channel detection. Required the gain envelope and sliding-window-minimum to become per-channel internally; bit-identical to v1 at 100%.
+  - **Dither Shape** (Flat/Shaped, default Flat): a fixed, project-owned noise-shaping filter option crossed with the existing Dither bit-depth choice, pushing quantisation-noise energy toward higher frequencies. Flat is bit-identical to v1's plain TPDF dither.
+- **M2 preset system** (`src/presets/`, copied verbatim from the suite pilot `basilica-audio/nave` per `docs/preset-system-notes.md`'s replication recipe): factory/user preset discovery, save/load/rename/delete, default resolution (user Default > factory Default > built-in defaults), single-file and zip-bank import/export, and a `PresetBar` docked at the top of the editor. Eight factory presets (`presets/factory/*.json`, `docs/presets.md`) covering the v1-compatible default plus a starting point for each new v0.2.0 control.
+- **German frame-string localisation** (`resources/i18n/de.txt`, `src/presets/Localisation.*`): the preset bar's interface text (not parameter names/units, which always stay English) appears in German automatically when the host system's language is German.
+- `tests/AttackAutoReleaseTests.cpp`, `tests/StereoLinkDitherShapeTests.cpp`, `tests/StateMigrationTests.cpp`, `tests/RegressionTests.cpp`, `tests/PresetManagerTests.cpp`, `tests/LocalisationTests.cpp`: full coverage of the brief's ten numbered guarantees plus the M2 preset spec's minimum test list, broadening the suite from 45 to 80 Catch2 test cases.
+- CI: `.github/workflows/release.yml` now creates the GitHub release object itself (idempotent `create-release` job) before the macOS/Windows build jobs attempt to attach assets to it - both jobs previously assumed the release already existed and failed with "release not found" on a fresh tag push.
+
+### Changed
+
+- `docs/architecture.md`, `docs/manual.md` updated for the full v0.2.0 signal path (Attack, Auto Release, Stereo Link, Dither Shape), the M2 preset system, and the i18n frame; `docs/design-brief.md` and `docs/research-notes.md` added (the binding brief and its sourcing for this pass).
+- State migration: old v1 saved state (seven parameters, no v0.2.0 IDs) loads without crashing, with all four new parameters falling back to their v2 defaults - unusually simple since every new default already reproduces v1's exact behaviour (`tests/StateMigrationTests.cpp`).
+
 ## [0.1.2] - 2026-07-16
 
 ### Changed

@@ -50,15 +50,16 @@ TEST_CASE ("Processor instantiates with the expected parameters", "[processor][p
         static constexpr const char* allIds[] = {
             ParamIDs::inputGain, ParamIDs::ceiling, ParamIDs::release, ParamIDs::lookahead,
             ParamIDs::releaseCurve, ParamIDs::dither, ParamIDs::clipMix,
+            ParamIDs::attack, ParamIDs::autoRelease, ParamIDs::stereoLink, ParamIDs::ditherShape,
         };
 
         for (const auto* id : allIds)
             CHECK (apvts.getParameter (id) != nullptr);
     }
 
-    SECTION ("total parameter count matches the v0.1.0 layout")
+    SECTION ("total parameter count matches the v0.2.0 layout (7 v0.1 + 4 new)")
     {
-        CHECK (apvts.processor.getParameters().size() == 7);
+        CHECK (apvts.processor.getParameters().size() == 11);
     }
 
     SECTION ("Input Gain: defaults and range")
@@ -111,5 +112,39 @@ TEST_CASE ("Processor instantiates with the expected parameters", "[processor][p
     {
         checkFloatDefault (apvts, ParamIDs::clipMix, 0.0f);
         checkFloatRange (apvts, ParamIDs::clipMix, 0.0f, 100.0f);
+    }
+
+    //==========================================================================
+    // v0.2.0 deep-dive additions (docs/design-brief.md). Every default below
+    // is also the value that reproduces v1's exact prior behaviour - see
+    // tests/RegressionTests.cpp for the bit-identical-output assertion.
+    //==========================================================================
+
+    SECTION ("Attack: defaults and range")
+    {
+        checkFloatDefault (apvts, ParamIDs::attack, 0.0f);
+        checkFloatRange (apvts, ParamIDs::attack, 0.0f, 50.0f);
+    }
+
+    SECTION ("Auto Release: defaults and range")
+    {
+        checkFloatDefault (apvts, ParamIDs::autoRelease, 0.0f);
+        checkFloatRange (apvts, ParamIDs::autoRelease, 0.0f, 100.0f);
+    }
+
+    SECTION ("Stereo Link: defaults and range")
+    {
+        checkFloatDefault (apvts, ParamIDs::stereoLink, 100.0f);
+        checkFloatRange (apvts, ParamIDs::stereoLink, 0.0f, 100.0f);
+    }
+
+    SECTION ("Dither Shape: default index and choices")
+    {
+        auto* param = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (ParamIDs::ditherShape));
+        REQUIRE (param != nullptr);
+        CHECK (param->getIndex() == 0);
+        CHECK (param->choices.size() == 2);
+        CHECK (param->choices[0] == "Flat");
+        CHECK (param->choices[1] == "Shaped");
     }
 }

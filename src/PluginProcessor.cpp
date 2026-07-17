@@ -3,12 +3,62 @@
 #include "params/ParameterIds.h"
 #include "params/ParameterLayout.h"
 
+#include <BinaryData.h>
+
+namespace
+{
+    // The small, Apotheosis-specific config surface PresetManager needs
+    // (see src/presets/PresetManager.h's class docs) - everything else
+    // about the preset system is fully generic and portable to sibling
+    // plugins (see docs/preset-system-notes.md, the pilot's replication
+    // recipe).
+    basilica::presets::PresetManagerConfig makePresetManagerConfig()
+    {
+        // JucePlugin_CFBundleIdentifier expands to a raw (unquoted) token
+        // sequence, not a string literal - JUCE_STRINGIFY() is the
+        // documented way to turn it into one. This is always
+        // "com.yvesvogl.apotheosis" here (BUNDLE_ID in CMakeLists.txt),
+        // matching the "plugin" field baked into every
+        // presets/factory/*.json file.
+        basilica::presets::PresetManagerConfig config;
+        config.pluginId = JUCE_STRINGIFY (JucePlugin_CFBundleIdentifier);
+        config.pluginName = JucePlugin_Name;
+        config.manufacturerName = "Yves Vogl";
+        config.pluginVersion = JucePlugin_VersionString;
+        // userPresetsDirectoryOverrideForTests intentionally left
+        // default-constructed (empty) - production instances always use the
+        // real platform-standard preset location (see PresetManager.h).
+        return config;
+    }
+
+    // BinaryData symbol names are derived from the presets/factory/*.json
+    // file names passed to juce_add_binary_data() in CMakeLists.txt (dots
+    // become underscores) - this list must stay in sync with that SOURCES
+    // list. Order here only affects factory-preset iteration order before
+    // getAllPresets() re-sorts alphabetically, so it isn't otherwise
+    // significant.
+    std::vector<basilica::presets::FactoryPresetAsset> makeFactoryPresetAssets()
+    {
+        return {
+            { BinaryData::default_json, BinaryData::default_jsonSize },
+            { BinaryData::punchyMaster_json, BinaryData::punchyMaster_jsonSize },
+            { BinaryData::denseLoudModern_json, BinaryData::denseLoudModern_jsonSize },
+            { BinaryData::wideImagePreserve_json, BinaryData::wideImagePreserve_jsonSize },
+            { BinaryData::streamingSafeHighLoudness_json, BinaryData::streamingSafeHighLoudness_jsonSize },
+            { BinaryData::adaptiveRiding_json, BinaryData::adaptiveRiding_jsonSize },
+            { BinaryData::brightClipperBlend_json, BinaryData::brightClipperBlend_jsonSize },
+            { BinaryData::cleanExportDithered_json, BinaryData::cleanExportDithered_jsonSize },
+        };
+    }
+}
+
 //==============================================================================
 ApotheosisAudioProcessor::ApotheosisAudioProcessor()
     : AudioProcessor (BusesProperties()
                           .withInput ("Input", juce::AudioChannelSet::stereo(), true)
                           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
-      apvts (*this, nullptr, "PARAMETERS", createParameterLayout())
+      apvts (*this, nullptr, "PARAMETERS", createParameterLayout()),
+      presetManager (apvts, makePresetManagerConfig(), makeFactoryPresetAssets())
 {
     inputGainDb = apvts.getRawParameterValue (ParamIDs::inputGain);
     ceilingDb = apvts.getRawParameterValue (ParamIDs::ceiling);
@@ -17,6 +67,10 @@ ApotheosisAudioProcessor::ApotheosisAudioProcessor()
     releaseCurveChoice = apvts.getRawParameterValue (ParamIDs::releaseCurve);
     ditherChoice = apvts.getRawParameterValue (ParamIDs::dither);
     clipMixPercent = apvts.getRawParameterValue (ParamIDs::clipMix);
+    attackMs = apvts.getRawParameterValue (ParamIDs::attack);
+    autoReleasePercent = apvts.getRawParameterValue (ParamIDs::autoRelease);
+    stereoLinkPercent = apvts.getRawParameterValue (ParamIDs::stereoLink);
+    ditherShapeChoice = apvts.getRawParameterValue (ParamIDs::ditherShape);
 
     jassert (inputGainDb != nullptr);
     jassert (ceilingDb != nullptr);
@@ -25,6 +79,15 @@ ApotheosisAudioProcessor::ApotheosisAudioProcessor()
     jassert (releaseCurveChoice != nullptr);
     jassert (ditherChoice != nullptr);
     jassert (clipMixPercent != nullptr);
+    jassert (attackMs != nullptr);
+    jassert (autoReleasePercent != nullptr);
+    jassert (stereoLinkPercent != nullptr);
+    jassert (ditherShapeChoice != nullptr);
+
+    // M2 default resolution: user "Default" preset > factory "Default"
+    // preset > the ParameterLayout defaults apvts was just constructed
+    // with above (see PresetManager::applyStartupDefault()'s docs).
+    presetManager.applyStartupDefault();
 }
 
 ApotheosisAudioProcessor::~ApotheosisAudioProcessor() = default;
@@ -106,6 +169,10 @@ void ApotheosisAudioProcessor::prepareToPlay (double sampleRate, int samplesPerB
     engine.setReleaseCurve (static_cast<int> (releaseCurveChoice->load (std::memory_order_relaxed)));
     engine.setDitherMode (static_cast<int> (ditherChoice->load (std::memory_order_relaxed)));
     engine.setClipMixPercent (clipMixPercent->load (std::memory_order_relaxed));
+    engine.setAttackMs (attackMs->load (std::memory_order_relaxed));
+    engine.setAutoReleasePercent (autoReleasePercent->load (std::memory_order_relaxed));
+    engine.setStereoLinkPercent (stereoLinkPercent->load (std::memory_order_relaxed));
+    engine.setDitherShape (static_cast<int> (ditherShapeChoice->load (std::memory_order_relaxed)));
 
     engine.prepare (spec);
 
@@ -152,9 +219,10 @@ void ApotheosisAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
     for (auto channel = totalNumInputChannels; channel < totalNumOutputChannels; ++channel)
         buffer.clear (channel, 0, buffer.getNumSamples());
 
-    // InputGain/Ceiling/Release/ReleaseCurve/Dither/ClipMix are all cheap to
-    // update every block (smoothed internally where audible, no allocation
-    // either way). Lookahead is deliberately NOT re-applied here - see
+    // InputGain/Ceiling/Release/ReleaseCurve/Dither/ClipMix/Attack/Auto
+    // Release/Stereo Link/Dither Shape are all cheap to update every block
+    // (smoothed internally where audible, no allocation either way).
+    // Lookahead is deliberately NOT re-applied here - see
     // TruePeakLimiterEngine::setLookaheadMs() and prepareToPlay() above;
     // changing it takes effect only on the next prepare() cycle.
     engine.setInputGainDb (inputGainDb->load (std::memory_order_relaxed));
@@ -163,6 +231,10 @@ void ApotheosisAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
     engine.setReleaseCurve (static_cast<int> (releaseCurveChoice->load (std::memory_order_relaxed)));
     engine.setDitherMode (static_cast<int> (ditherChoice->load (std::memory_order_relaxed)));
     engine.setClipMixPercent (clipMixPercent->load (std::memory_order_relaxed));
+    engine.setAttackMs (attackMs->load (std::memory_order_relaxed));
+    engine.setAutoReleasePercent (autoReleasePercent->load (std::memory_order_relaxed));
+    engine.setStereoLinkPercent (stereoLinkPercent->load (std::memory_order_relaxed));
+    engine.setDitherShape (static_cast<int> (ditherShapeChoice->load (std::memory_order_relaxed)));
 
     juce::dsp::AudioBlock<float> block (buffer);
     engine.process (block);

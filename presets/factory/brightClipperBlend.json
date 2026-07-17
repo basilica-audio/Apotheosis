@@ -1,0 +1,20 @@
+{
+    "format": "basilica-preset-1",
+    "plugin": "com.yvesvogl.apotheosis",
+    "pluginVersion": "0.2.0",
+    "name": "Bright Clipper Blend",
+    "category": "Master",
+    "parameters": {
+        "inputGain": 5.0,
+        "ceiling": -1.0,
+        "release": 40.0,
+        "lookahead": 2.0,
+        "releaseCurve": 0,
+        "dither": 0,
+        "clipMix": 60.0,
+        "attack": 30.0,
+        "autoRelease": 0.0,
+        "stereoLink": 100.0,
+        "ditherShape": 0
+    }
+}

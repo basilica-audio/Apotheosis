@@ -10,7 +10,7 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS deployment ta
 # here at the top level avoids it being enabled implicitly deeper inside
 # JUCE's CMake helpers, which has been observed to break Ninja's generate
 # step (missing CMAKE_C_COMPILE_OBJECT rule variable).
-project(Apotheosis VERSION 0.1.2 LANGUAGES C CXX)
+project(Apotheosis VERSION 0.2.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -56,6 +56,28 @@ juce_add_plugin(Apotheosis
 )
 
 # ==============================================================================
+# Embedded assets: M2 preset system factory presets (presets/factory/*.json)
+# and the M2 i18n frame's German translation (resources/i18n/de.txt). See
+# src/presets/PresetManager.h and src/presets/Localisation.h - both consume
+# these purely via BinaryData:: symbols passed in from PluginProcessor.cpp/
+# PluginEditor.cpp, never by including BinaryData.h themselves, so they stay
+# portable to sibling plugins (see docs/preset-system-notes.md pattern,
+# pioneered by basilica-audio/nave).
+# ==============================================================================
+
+juce_add_binary_data(ApotheosisBinaryData SOURCES
+    presets/factory/default.json
+    presets/factory/punchyMaster.json
+    presets/factory/denseLoudModern.json
+    presets/factory/wideImagePreserve.json
+    presets/factory/streamingSafeHighLoudness.json
+    presets/factory/adaptiveRiding.json
+    presets/factory/brightClipperBlend.json
+    presets/factory/cleanExportDithered.json
+    resources/i18n/de.txt
+)
+
+# ==============================================================================
 # SharedCode: an INTERFACE target carrying the plugin's sources, definitions,
 # and library links so that both the plugin targets (AU/VST3/Standalone) and
 # the Tests executable compile the exact same code (Pamplejuce pattern, see
@@ -87,9 +109,11 @@ target_compile_definitions(SharedCode INTERFACE
 target_link_libraries(SharedCode INTERFACE
     juce::juce_audio_utils
     juce::juce_dsp
+    juce::juce_gui_basics
     juce::juce_recommended_config_flags
     juce::juce_recommended_lto_flags
     juce::juce_recommended_warning_flags
+    ApotheosisBinaryData
 )
 
 target_link_libraries(Apotheosis PRIVATE SharedCode)
