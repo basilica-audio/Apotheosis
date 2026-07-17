@@ -14,7 +14,7 @@
 
 Apotheosis is a lookahead brickwall **true-peak limiter** for the master bus, built on JUCE 8. It is the final gate before export: input gain drives an oversampled true-peak detector, a lookahead delay makes the resulting gain reduction instantaneous (no attack transient) rather than reactive, and a smooth release relaxes it back once the peak has passed. The output's true (inter-sample) peak never exceeds the Ceiling.
 
-## Features (v0.2.0 scope)
+## Features (v0.3.0 scope)
 
 - **Input Gain** - -12 to +24 dB trim into the limiter
 - **Ceiling** - -12 to 0 dBTP true-peak target, default -1.0 dBTP (conventional mastering safety margin)
@@ -26,8 +26,9 @@ Apotheosis is a lookahead brickwall **true-peak limiter** for the master bus, bu
 - **Release Curve** - Exponential / Linear / Smooth, shaping the release phase only (attack always stays instantaneous)
 - **Clip Mix** - 0-100% blend between the transparent limiter path and an alternate tanh soft-clip "clipper" character, both backed by the same never-exceed-ceiling guarantee
 - **Dither** - Off / 16-bit / 24-bit TPDF dither at the output word length, crossed with **Dither Shape** (Flat / Shaped)
-- **Metering (engine-side)** - gain reduction, output true peak, and Momentary/Short-Term/Integrated LUFS, published via the processor for a future GUI or any host/test harness
+- **Metering** - three photoreal needle meters (Gain Reduction / True Peak / LUFS), plus Short-Term/Integrated LUFS available via the processor for any host/test harness
 - **Presets** - eight factory presets, user save/load/import/export (single files and zip banks), German-localised preset bar interface
+- **Photoreal skeuomorphic GUI** *(v0.3.0)* - pre-rendered brass/gunmetal faceplate, filmstrip knobs, needle meters, stepped 100/150/200% window scaling, full keyboard/screen-reader accessibility
 - Full state save/recall via `AudioProcessorValueTreeState`, with backward-tolerant migration from v0.1's seven-parameter state
 
 ## Signal flow
@@ -39,7 +40,7 @@ Input --> Input Gain --> [4x oversampled] true-peak detect (Stereo Link) --> loo
      Output <-- Dither (Flat/Shaped) <-- ceiling clamp <-- Clip Mix blend <-- apply gain to lookahead-delayed signal <--+
 ```
 
-See [`docs/manual.md`](docs/manual.md) for the full parameter reference and usage tips, and [`docs/architecture.md`](docs/architecture.md) for the engineering breakdown, including the lookahead/release mechanism, the latency model, and the internal headroom-margin rationale. New in v0.2.0: research-derived voicing additions sourced in [`docs/design-brief.md`](docs/design-brief.md)/[`docs/research-notes.md`](docs/research-notes.md), and the preset system documented in [`docs/presets.md`](docs/presets.md).
+See [`docs/manual.md`](docs/manual.md) for the full parameter reference and usage tips, and [`docs/architecture.md`](docs/architecture.md) for the engineering breakdown, including the lookahead/release mechanism, the latency model, and the internal headroom-margin rationale. v0.2.0: research-derived voicing additions sourced in [`docs/design-brief.md`](docs/design-brief.md)/[`docs/research-notes.md`](docs/research-notes.md), and the preset system documented in [`docs/presets.md`](docs/presets.md). v0.3.0: the photoreal GUI documented in [`docs/gui-components.md`](docs/gui-components.md).
 
 ## Roadmap
 
@@ -47,7 +48,7 @@ See [`docs/manual.md`](docs/manual.md) for the full parameter reference and usag
 |---|---|---|
 | M1 | DSP completion & test coverage - Release Curve, Dither, Clip Mix, metering, broadened Catch2 suite | Done |
 | M2 | Deep-dive voicing rework (Attack, Auto Release, Stereo Link, Dither Shape) & presets/state recall | Done |
-| M3 | Custom GUI & accessibility | Planned |
+| M3 | Custom GUI & accessibility | Done |
 | M4 | Release engineering - signing, notarization, installers, v1.0.0 | Planned |
 <!-- ==END BODY== -->
 

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-18
+
+### Added
+
+- **Photoreal skeuomorphic GUI (M3)**, replicating the suite pilot's pattern (`basilica-audio/silentium`) 1:1: a pre-rendered stone/gunmetal faceplate (`resources/gui/faceplate_apotheosis_*.png`, engraved section bays laid out per `.scaffold/gui-assets/faceplate-apotheosis-v1/layout-manifest.json`), brass filmstrip knobs (128 frames, -135deg..+135deg) for all eight continuous parameters, and three glass-covered analog needle meters - **Gain Reduction**, **True Peak**, and **LUFS** - with ~300 ms ballistic smoothing, fed from `TruePeakLimiterEngine`'s existing metering atomics. See `docs/gui-preview.png` for the rendered result and `docs/gui-components.md` for the component architecture, the three-meter dB-mapping rationale, and this plugin's specific layout choices (mixed knob/combo-box bay grids; no bespoke asset for the three discrete choice parameters).
+- **Suite-reusable GUI component family copied verbatim** (`src/gui/`): `FilmstripKnob`, `FilmstripToggle` (unused here - Apotheosis has no boolean parameters), `AnalogMeter`, `BasilicaLookAndFeel`, `ImageDensity.h`.
+- **Lookahead "setup" treatment**: since Lookahead is prepare-time-latched (sizes real-time buffers, changes reported latency - takes effect at the next engine restart, not live), its knob is labelled "Lookahead (Setup)", carries an accessibility description explaining why, and is enclosed in a dashed amber frame distinguishing it from the other, live-responsive knobs.
+- **Stepped window scaling** (100/150/200%, via a control next to the preset bar) - no free resize, because the artwork is pre-rendered at fixed density tiers. The chosen step persists in the plugin state (a plain `uiScaleStep` property on the APVTS tree) and round-trips through host session save/reload.
+- **Accessibility**: `FilmstripKnob`/`AnalogMeter` expose accessible titles, units-suffixed values, and (for meters) a read-only on-demand value interface; keyboard focus draws a visible gold focus ring; the discrete choice combo boxes are styled with `BasilicaLookAndFeel`'s WCAG-AA-verified (>= 4.5:1) gold-on-dark colour pair.
+- `tests/gui/` (7 files, 23 new test cases, 103 total, all green): filmstrip frame-math edges, toggle frame-table mapping, meter ballistics step response and tick-angle interpolation, WCAG contrast verification, editor layout invariants (bay geometry vs the manifest), editor accessibility (knob/meter/choice/scale-button accessible values), and an offscreen editor snapshot (written to `build/gui-preview.png`, committed as `docs/gui-preview.png`) verified non-blank.
+
+### Changed
+
+- `docs/architecture.md`, `docs/manual.md`, `README.md` updated for the v0.3.0 GUI, its metering display, and the Lookahead setup-control treatment.
+- CMake project version bumped to 0.3.0.
+
 ## [0.2.0] - 2026-07-16
 
 ### Added
