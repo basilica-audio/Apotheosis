@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GainEnvelopeStages.h"
+#include "GatedLoudnessMeter.h"
 #include "PsychoacousticDither.h"
 #include "TruePeakInterpolator.h"
 
@@ -234,7 +235,16 @@ public:
     float getOutputTruePeakDb() const noexcept { return outputTruePeakDbAtomic.load (std::memory_order_relaxed); }
     float getMomentaryLufs() const noexcept { return momentaryLufsAtomic.load (std::memory_order_relaxed); }
     float getShortTermLufs() const noexcept { return shortTermLufsAtomic.load (std::memory_order_relaxed); }
+    // v0.4.0 (F5): now the BS.1770-4 gated measurement (400 ms blocks, 75 %
+    // overlap, -70 LUFS absolute + -10 LU relative gate) - the former
+    // "documented deviation" absolute-gate-only value is gone. -100.0f
+    // until the first gating block passes the absolute gate.
     float getIntegratedLufs() const noexcept { return integratedLufsAtomic.load (std::memory_order_relaxed); }
+
+    // v0.4.0 (F5): EBU Tech 3342 Loudness Range (95th - 10th percentile of
+    // relative-gated short-term loudness), in LU. 0.0f until enough signal
+    // has accumulated (needs the 3 s short-term window primed).
+    float getLoudnessRangeLu() const noexcept { return lraLuAtomic.load (std::memory_order_relaxed); }
 
     // v0.4.0 metering additions. The true-peak readout (and its max hold)
     // is now a spec-shaped BS.1770-4 4x-interpolated measurement of the
@@ -276,15 +286,6 @@ private:
     // reconstruction-filter ripple - see process(). Has zero effect at
     // Clip Mix = 0%.
     static constexpr float clipExtraHeadroomDb = 1.0f;
-
-    // LUFS metering absolute gate (ITU-R BS.1770-4): momentary loudness
-    // readings quieter than this are excluded from the Integrated Loudness
-    // accumulator. See docs/architecture.md for the documented deviations
-    // from the full two-pass relative-gated spec algorithm (this engine
-    // implements the absolute gate only, evaluated once per processed
-    // block rather than per 400ms gating block, for O(1) real-time-safe
-    // accumulation).
-    static constexpr float integratedGateLufs = -70.0f;
 
     // Maximum channel count this engine supports independent per-channel
     // state for - matches PluginProcessor::isBusesLayoutSupported's
@@ -532,6 +533,7 @@ private:
     std::atomic<float> momentaryLufsAtomic { -100.0f };
     std::atomic<float> shortTermLufsAtomic { -100.0f };
     std::atomic<float> integratedLufsAtomic { -100.0f };
+    std::atomic<float> lraLuAtomic { 0.0f };
     std::atomic<float> truePeakMaxHoldDbAtomic { -100.0f };
     std::atomic<float> maxGainReductionDbAtomic { 0.0f };
 
@@ -562,8 +564,11 @@ private:
     LoudnessWindow momentaryWindow;
     LoudnessWindow shortTermWindow;
 
-    double integratedPowerSum = 0.0;
-    juce::int64 integratedSampleCount = 0;
+    // F5 (v0.4.0): BS.1770-4 gated Integrated Loudness + EBU Tech 3342 LRA
+    // (src/dsp/GatedLoudnessMeter.h) - replaces v0.2.0's documented-
+    // deviation absolute-gate-only accumulator. Metering only, zero
+    // audio-path impact.
+    GatedLoudnessMeter gatedMeter;
 
     // Does the actual per-chunk work formerly done directly inside
     // process(): `block` here is guaranteed by process() to be no larger

@@ -211,25 +211,53 @@ void TruePeakLimiterEngine::prepare (const juce::dsp::ProcessSpec& spec)
     stereoLinkSmoothed.setCurrentAndTargetValue (lastStereoLinkPercent * 0.01f);
 
     //==================================================================
-    // LUFS metering: K-weighting filters (ITU-R BS.1770-4 analog
-    // prototype, re-derived per sample rate via the standard bilinear-
-    // transform shelf/high-pass design so this works correctly at any
-    // supported sample rate, not just the 48 kHz the spec's published
-    // digital coefficients target) plus the momentary (400 ms) and
-    // short-term (3 s) sliding windows. Everything here runs at the BASE
-    // sample rate (post-downsample), operating on the actual output
-    // signal - see docs/architecture.md.
+    // LUFS metering: K-weighting filters (ITU-R BS.1770-4) plus the
+    // momentary (400 ms) and short-term (3 s) sliding windows. Everything
+    // here runs at the BASE sample rate (post-downsample), operating on
+    // the actual output signal - see docs/architecture.md.
+    //
+    // v0.4.0 (F5): the two stages are now built from the EXACT analog-
+    // prototype deconstruction of the spec's filters (the de Man
+    // parametrization - B. De Man, "Evaluation of implementations of the
+    // ITU-R BS.1770 loudness algorithm", also used by pyloudnorm): at
+    // 48 kHz these formulas reproduce the spec's published digital
+    // coefficients to the last decimal, and at any other rate they give
+    // the correctly-matched response. v0.2.0 used juce::dsp's generic
+    // RBJ-style makeHighShelf with the same corner parameters, whose
+    // response at 997 Hz is 0.26 dB shy of the spec's +0.691 dB - the
+    // former "documented approximation". Metering-only change (the
+    // K filters feed nothing but the meters); required for T11's
+    // EBU Tech 3341 +/-0.1 LU conformance.
     //==================================================================
-    constexpr float shelfFrequencyHz = 1681.9744509555319f;
-    constexpr float shelfQ = 0.7071752369554196f;
-    constexpr float shelfGainDb = 3.999843853973347f;
-    constexpr float highPassFrequencyHz = 38.13547087602444f;
-    constexpr float highPassQ = 0.5003270373238773f;
+    const auto shelfK = std::tan (juce::MathConstants<double>::pi * 1681.9744509555319 / sampleRate);
+    constexpr double shelfQ = 0.7071752369554196;
+    const auto shelfVh = std::pow (10.0, 3.999843853973347 / 20.0);
+    const auto shelfVb = std::pow (shelfVh, 0.4996667741545416);
+    const auto shelfNorm = 1.0 + shelfK / shelfQ + shelfK * shelfK;
 
-    const auto shelfCoefficients = juce::dsp::IIR::Coefficients<float>::makeHighShelf (
-        sampleRate, shelfFrequencyHz, shelfQ, juce::Decibels::decibelsToGain (shelfGainDb));
-    const auto highPassCoefficients = juce::dsp::IIR::Coefficients<float>::makeHighPass (
-        sampleRate, highPassFrequencyHz, highPassQ);
+    const auto shelfCoefficients = juce::dsp::IIR::Coefficients<float>::Ptr (
+        new juce::dsp::IIR::Coefficients<float> (
+            static_cast<float> ((shelfVh + shelfVb * shelfK / shelfQ + shelfK * shelfK) / shelfNorm),
+            static_cast<float> (2.0 * (shelfK * shelfK - shelfVh) / shelfNorm),
+            static_cast<float> ((shelfVh - shelfVb * shelfK / shelfQ + shelfK * shelfK) / shelfNorm),
+            1.0f,
+            static_cast<float> (2.0 * (shelfK * shelfK - 1.0) / shelfNorm),
+            static_cast<float> ((1.0 - shelfK / shelfQ + shelfK * shelfK) / shelfNorm)));
+
+    const auto highPassK = std::tan (juce::MathConstants<double>::pi * 38.13547087602444 / sampleRate);
+    constexpr double highPassQ = 0.5003270373238773;
+    const auto highPassNorm = 1.0 + highPassK / highPassQ + highPassK * highPassK;
+
+    // The spec's high-pass numerator is exactly [1, -2, 1] (not passband-
+    // normalised) - keep it that way for coefficient-exactness at 48 kHz.
+    const auto highPassCoefficients = juce::dsp::IIR::Coefficients<float>::Ptr (
+        new juce::dsp::IIR::Coefficients<float> (
+            1.0f,
+            -2.0f,
+            1.0f,
+            1.0f,
+            static_cast<float> (2.0 * (highPassK * highPassK - 1.0) / highPassNorm),
+            static_cast<float> ((1.0 - highPassK / highPassQ + highPassK * highPassK) / highPassNorm)));
 
     juce::dsp::ProcessSpec monoSpec { spec.sampleRate, spec.maximumBlockSize, 1 };
 
@@ -247,6 +275,11 @@ void TruePeakLimiterEngine::prepare (const juce::dsp::ProcessSpec& spec)
 
     momentaryWindow.prepare (juce::jmax (1, juce::roundToInt (0.4 * sampleRate)));
     shortTermWindow.prepare (juce::jmax (1, juce::roundToInt (3.0 * sampleRate)));
+
+    // F5 (v0.4.0): gated Integrated/LRA meter - fixed histograms, sized
+    // once here (the 100 ms sub-block length is a fixed sample count at
+    // the prepared base rate).
+    gatedMeter.prepare (sampleRate);
 
     // F4 (v0.4.0): (re-)seed the Weighted path's per-channel independent
     // dither RNG streams. The Legacy path's shared ditherRng is
@@ -318,14 +351,14 @@ void TruePeakLimiterEngine::reset()
 
     momentaryWindow.reset();
     shortTermWindow.reset();
-    integratedPowerSum = 0.0;
-    integratedSampleCount = 0;
+    gatedMeter.reset();
 
     gainReductionDbAtomic.store (0.0f, std::memory_order_relaxed);
     outputTruePeakDbAtomic.store (-100.0f, std::memory_order_relaxed);
     momentaryLufsAtomic.store (-100.0f, std::memory_order_relaxed);
     shortTermLufsAtomic.store (-100.0f, std::memory_order_relaxed);
     integratedLufsAtomic.store (-100.0f, std::memory_order_relaxed);
+    lraLuAtomic.store (0.0f, std::memory_order_relaxed);
     truePeakMaxHoldDbAtomic.store (-100.0f, std::memory_order_relaxed);
     maxGainReductionDbAtomic.store (0.0f, std::memory_order_relaxed);
 }
@@ -1025,13 +1058,14 @@ void TruePeakLimiterEngine::processChunk (juce::dsp::AudioBlock<float>& block)
 
     //==================================================================
     // LUFS metering (K-weighted, base rate, post-downsample - i.e. the
-    // actual output signal). See docs/architecture.md for the documented
-    // simplifications versus the full ITU-R BS.1770-4 two-pass relative-
-    // gated Integrated Loudness algorithm.
+    // actual output signal). v0.4.0 (F5): Integrated is now the full
+    // BS.1770-4 gated measurement and LRA (EBU Tech 3342) is computed
+    // alongside - both inside GatedLoudnessMeter, fed the same per-sample
+    // K-weighted power the momentary/short-term windows consume (channel
+    // weights G are 1.0 for the mono/stereo layouts this plugin accepts).
     //==================================================================
     double latestMomentaryMeanPower = 0.0;
     double latestShortTermMeanPower = 0.0;
-    double blockWeightedPowerSum = 0.0;
 
     for (size_t i = 0; i < numSamples; ++i)
     {
@@ -1048,7 +1082,7 @@ void TruePeakLimiterEngine::processChunk (juce::dsp::AudioBlock<float>& block)
 
         latestMomentaryMeanPower = momentaryWindow.pushAndGetMeanPower (static_cast<float> (weightedPower));
         latestShortTermMeanPower = shortTermWindow.pushAndGetMeanPower (static_cast<float> (weightedPower));
-        blockWeightedPowerSum += weightedPower;
+        gatedMeter.pushSamplePower (weightedPower);
     }
 
     const auto momentaryDb = latestMomentaryMeanPower > 0.0
@@ -1061,22 +1095,8 @@ void TruePeakLimiterEngine::processChunk (juce::dsp::AudioBlock<float>& block)
     momentaryLufsAtomic.store (momentaryDb, std::memory_order_relaxed);
     shortTermLufsAtomic.store (shortTermDb, std::memory_order_relaxed);
 
-    // Absolute-gated (only) Integrated Loudness accumulation - see the
-    // integratedGateLufs comment in the header for the documented
-    // deviation from the full spec's relative gate / 400ms gating blocks.
-    if (momentaryDb > integratedGateLufs)
-    {
-        integratedPowerSum += blockWeightedPowerSum;
-        integratedSampleCount += static_cast<juce::int64> (numSamples);
-    }
-
-    const auto integratedMeanPower = integratedSampleCount > 0
-                                          ? integratedPowerSum / static_cast<double> (integratedSampleCount)
-                                          : 0.0;
-    const auto integratedDb = integratedMeanPower > 0.0
-                                   ? static_cast<float> (-0.691 + 10.0 * std::log10 (integratedMeanPower))
-                                   : -100.0f;
-    integratedLufsAtomic.store (integratedDb, std::memory_order_relaxed);
+    integratedLufsAtomic.store (gatedMeter.getIntegratedLufs(), std::memory_order_relaxed);
+    lraLuAtomic.store (gatedMeter.getLoudnessRangeLu(), std::memory_order_relaxed);
 
     //==================================================================
     // Dither: TPDF noise added at the very end, after downsampling, at the

@@ -68,6 +68,14 @@ public:
     float getShortTermLufs() const noexcept { return engine.getShortTermLufs(); }
     float getIntegratedLufs() const noexcept { return engine.getIntegratedLufs(); }
 
+    // v0.4.0 metering pack (F5/F2): spec-gated LRA, resettable true-peak
+    // max hold and deepest-GR hold - see TruePeakLimiterEngine.h.
+    float getLoudnessRangeLu() const noexcept { return engine.getLoudnessRangeLu(); }
+    float getTruePeakMaxHoldDb() const noexcept { return engine.getTruePeakMaxHoldDb(); }
+    void resetTruePeakMaxHold() noexcept { engine.resetTruePeakMaxHold(); }
+    float getMaxGainReductionDb() const noexcept { return engine.getMaxGainReductionDb(); }
+    void resetMaxGainReduction() noexcept { engine.resetMaxGainReduction(); }
+
 private:
     TruePeakLimiterEngine engine;
 

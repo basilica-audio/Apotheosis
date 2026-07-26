@@ -213,3 +213,144 @@ TEST_CASE ("Meters do not update on a zero-sample block (safe no-op)", "[meterin
     CHECK (processor.getGainReductionDb() == gainReductionBefore);
     CHECK (processor.getOutputTruePeakDb() == truePeakBefore);
 }
+
+//==============================================================================
+// T11 (v0.4.0, F5): BS.1770-4 / EBU Tech 3341+3342 conformance of the gated
+// Integrated Loudness and LRA (GatedLoudnessMeter). The steady-state and
+// gating cases run against the meter directly (exact synthetic K-weighted
+// powers - fast and tolerance-free); the end-to-end case runs the whole
+// engine so the K-weighting filters and the processChunk() plumbing are
+// covered too.
+//==============================================================================
+
+#include "dsp/GatedLoudnessMeter.h"
+
+namespace
+{
+    // Summed-across-channels K-weighted power for a target loudness:
+    // L = -0.691 + 10 log10(power)  =>  power = 10^((L + 0.691) / 10).
+    double powerForLoudness (double loudnessLufs)
+    {
+        return std::pow (10.0, (loudnessLufs + 0.691) / 10.0);
+    }
+
+    void pushSteadySeconds (GatedLoudnessMeter& meter, double loudnessLufs, double seconds, double sampleRate)
+    {
+        const auto power = powerForLoudness (loudnessLufs);
+        const auto numSamples = static_cast<juce::int64> (seconds * sampleRate);
+
+        for (juce::int64 i = 0; i < numSamples; ++i)
+            meter.pushSamplePower (power);
+    }
+}
+
+TEST_CASE ("T11: steady-state Integrated matches the fed loudness exactly (Tech 3341 cases 1-2 pattern)",
+           "[metering][lufs][t11]")
+{
+    constexpr double sampleRate = 48000.0;
+
+    for (const auto target : { -23.0, -33.0 })
+    {
+        CAPTURE (target);
+
+        GatedLoudnessMeter meter;
+        meter.prepare (sampleRate);
+
+        pushSteadySeconds (meter, target, 20.0, sampleRate);
+
+        CHECK (std::abs (static_cast<double> (meter.getIntegratedLufs()) - target) < 0.1);
+    }
+}
+
+TEST_CASE ("T11: the relative gate excludes quiet passages (Tech 3341 case 3 pattern)",
+           "[metering][lufs][t11]")
+{
+    constexpr double sampleRate = 48000.0;
+
+    GatedLoudnessMeter meter;
+    meter.prepare (sampleRate);
+
+    // Quiet - loud - quiet: the -36 LUFS flanks sit below the relative
+    // threshold (approximately mean - 10 LU, with the mean dominated by
+    // the -23 middle) and must not drag Integrated down.
+    pushSteadySeconds (meter, -36.0, 5.0, sampleRate);
+    pushSteadySeconds (meter, -23.0, 20.0, sampleRate);
+    pushSteadySeconds (meter, -36.0, 5.0, sampleRate);
+
+    CHECK (std::abs (static_cast<double> (meter.getIntegratedLufs()) - (-23.0)) < 0.1);
+}
+
+TEST_CASE ("T11: blocks below the absolute gate never enter the measurement",
+           "[metering][lufs][t11]")
+{
+    constexpr double sampleRate = 48000.0;
+
+    GatedLoudnessMeter meter;
+    meter.prepare (sampleRate);
+
+    // 10 s of -80 LUFS (below the -70 absolute gate) alone: no reading.
+    pushSteadySeconds (meter, -80.0, 10.0, sampleRate);
+    CHECK (meter.getIntegratedLufs() == -100.0f);
+
+    // Followed by -23: the earlier sub-gate material must not bias it.
+    pushSteadySeconds (meter, -23.0, 20.0, sampleRate);
+    CHECK (std::abs (static_cast<double> (meter.getIntegratedLufs()) - (-23.0)) < 0.1);
+}
+
+TEST_CASE ("T11: LRA matches the EBU Tech 3342 two-level vectors within +/-1 LU",
+           "[metering][lufs][lra][t11]")
+{
+    constexpr double sampleRate = 48000.0;
+
+    struct LraVector { double first; double second; double expectedLra; };
+
+    // Tech 3342 cases 1 and 2: two 20 s steady segments.
+    for (const auto& vector : { LraVector { -20.0, -30.0, 10.0 },
+                                LraVector { -20.0, -15.0, 5.0 } })
+    {
+        CAPTURE (vector.first, vector.second, vector.expectedLra);
+
+        GatedLoudnessMeter meter;
+        meter.prepare (sampleRate);
+
+        pushSteadySeconds (meter, vector.first, 20.0, sampleRate);
+        pushSteadySeconds (meter, vector.second, 20.0, sampleRate);
+
+        CHECK (std::abs (static_cast<double> (meter.getLoudnessRangeLu()) - vector.expectedLra) <= 1.0);
+    }
+}
+
+TEST_CASE ("T11: end-to-end engine render of a -23 LUFS stereo 997 Hz sine reads -23 +/-0.1 LUFS Integrated",
+           "[metering][lufs][t11]")
+{
+    // For a stereo 997 Hz sine of amplitude a in both channels, the summed
+    // K-weighted power is (a * k997)^2 and the -0.691 offset compensates
+    // the K-filter's gain at 997 Hz by construction, so L = 20 log10(a).
+    constexpr double sampleRate = 48000.0;
+    constexpr int blockSize = 4096;
+    constexpr double seconds = 20.0;
+    const auto amplitude = static_cast<float> (std::pow (10.0, -23.0 / 20.0));
+
+    TruePeakLimiterEngine engine;
+    juce::dsp::ProcessSpec spec { sampleRate, static_cast<juce::uint32> (blockSize), 2 };
+    engine.prepare (spec);
+    engine.setCeilingDb (0.0f); // far above the tone - pure pass-through
+
+    const auto totalSamples = static_cast<int> (seconds * sampleRate);
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    juce::MidiBuffer midi;
+
+    for (int position = 0; position + blockSize <= totalSamples; position += blockSize)
+    {
+        TestHelpers::fillWithSine (buffer, sampleRate, 997.0, amplitude, position);
+        juce::dsp::AudioBlock<float> chunk (buffer);
+        engine.process (chunk);
+    }
+
+    CAPTURE (engine.getIntegratedLufs());
+    CHECK (std::abs (static_cast<double> (engine.getIntegratedLufs()) - (-23.0)) < 0.1);
+
+    // A steady tone has (near-)zero loudness range - proves the LRA
+    // plumbing end-to-end without needing a long two-level programme.
+    CHECK (engine.getLoudnessRangeLu() < 1.0f);
+}
