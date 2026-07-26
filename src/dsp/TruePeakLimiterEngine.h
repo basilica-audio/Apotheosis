@@ -85,6 +85,35 @@ public:
         shaped = 1,
     };
 
+    // v0.4.0 Style engine (docs/manual.md per-style table). classic is the
+    // literal v0.2.0 envelope code path - rectangular sliding-min attack +
+    // binary transient classifier - kept verbatim behind a top-level
+    // dispatch so the golden-fixture regression net (tests/
+    // RegressionTests.cpp) stays meaningful. The other four styles use the
+    // cascaded-box FIR attack smoother + dual concurrent release stages
+    // (src/dsp/GainEnvelopeStages.h). Indices match the "Style"
+    // AudioParameterChoice.
+    enum class LimitStyle
+    {
+        classic = 0,
+        transparent = 1,
+        punchy = 2,
+        bus = 3,
+        safe = 4,
+    };
+
+    // v0.4.0 noise shaping selector. legacy routes through the untouched
+    // v0.2.0 dither code above (bit-identical, including the shared-RNG
+    // draw order); weighted engages the psychoacoustic 9th-order
+    // error-feedback requantiser (src/dsp/PsychoacousticDither.h). Only
+    // audible when DitherMode != off. Indices match the "Noise Shaping"
+    // AudioParameterChoice.
+    enum class NoiseShapingMode
+    {
+        legacy = 0,
+        weighted = 1,
+    };
+
     TruePeakLimiterEngine();
 
     // Allocates all DSP state (oversampler, lookahead delay buffer,
@@ -141,6 +170,24 @@ public:
     void setAutoReleasePercent (float newAutoReleasePercent) noexcept;
     void setStereoLinkPercent (float newStereoLinkPercent) noexcept;
     void setDitherShape (int newDitherShapeIndex) noexcept;
+
+    // v0.4.0 SOTA DSP additions (see ParameterIds.h for the per-control
+    // contracts). setLimitStyle/setTpGuard/setNoiseShaping/setDeltaListen/
+    // setUnityGainMonitor are cheap discrete switches safe to call every
+    // block from the audio thread (no allocation; style switches re-seed
+    // the envelope followers from the current gain so there is no snap).
+    // setOversamplingFactor/setOsPhase are LATCHED at prepare() with
+    // exactly the same contract as setLookaheadMs(): the setter only
+    // stores the value, prepare() reads it, and the change takes effect at
+    // the next host-driven re-prepare - there is deliberately no async
+    // re-prepare machinery in this release.
+    void setLimitStyle (int newLimitStyleIndex) noexcept;
+    void setOversamplingFactor (int newOversamplingChoiceIndex) noexcept; // 0 = 4x, 1 = 8x, 2 = 16x
+    void setOsPhase (int newOsPhaseIndex) noexcept; // 0 = Minimum Phase, 1 = Linear Phase
+    void setTpGuard (bool shouldEnableTpGuard) noexcept;
+    void setNoiseShaping (int newNoiseShapingIndex) noexcept;
+    void setDeltaListen (bool shouldEnableDeltaListen) noexcept;
+    void setUnityGainMonitor (bool shouldEnableUnityGainMonitor) noexcept;
 
     // Total reported latency in samples, valid after prepare() has run:
     // Lookahead (converted to samples at the prepared sample rate) plus the
@@ -351,6 +398,17 @@ private:
     float lastAttackMs = 0.0f;
     float lastAutoReleasePercent = 0.0f;
     float lastStereoLinkPercent = 100.0f;
+
+    // v0.4.0 additions. limitStyle/tpGuard/noiseShaping/deltaListen/
+    // unityGainMonitor are live discrete switches; the two oversampling
+    // values are prepare()-latched (same contract as lastLookaheadMs).
+    LimitStyle limitStyle = LimitStyle::classic;
+    int lastOversamplingChoiceIndex = 0; // 0 = 4x (v0.2.0 chain), 1 = 8x, 2 = 16x
+    int lastOsPhaseIndex = 0; // 0 = Minimum Phase (v0.2.0 filter class), 1 = Linear Phase
+    bool tpGuardEnabled = false;
+    NoiseShapingMode noiseShapingMode = NoiseShapingMode::legacy;
+    bool deltaListenEnabled = false;
+    bool unityGainMonitorEnabled = false;
 
     //==================================================================
     // Metering state (published via atomics - see the public getters).

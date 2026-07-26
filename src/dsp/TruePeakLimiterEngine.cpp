@@ -246,6 +246,45 @@ void TruePeakLimiterEngine::setDitherShape (int newDitherShapeIndex) noexcept
     ditherShape = static_cast<DitherShape> (juce::jlimit (0, 1, newDitherShapeIndex));
 }
 
+void TruePeakLimiterEngine::setLimitStyle (int newLimitStyleIndex) noexcept
+{
+    limitStyle = static_cast<LimitStyle> (juce::jlimit (0, 4, newLimitStyleIndex));
+}
+
+void TruePeakLimiterEngine::setOversamplingFactor (int newOversamplingChoiceIndex) noexcept
+{
+    // Latched only - read inside prepare(), same contract as
+    // setLookaheadMs() (see the header).
+    lastOversamplingChoiceIndex = juce::jlimit (0, 2, newOversamplingChoiceIndex);
+}
+
+void TruePeakLimiterEngine::setOsPhase (int newOsPhaseIndex) noexcept
+{
+    // Latched only - read inside prepare(), same contract as
+    // setLookaheadMs() (see the header).
+    lastOsPhaseIndex = juce::jlimit (0, 1, newOsPhaseIndex);
+}
+
+void TruePeakLimiterEngine::setTpGuard (bool shouldEnableTpGuard) noexcept
+{
+    tpGuardEnabled = shouldEnableTpGuard;
+}
+
+void TruePeakLimiterEngine::setNoiseShaping (int newNoiseShapingIndex) noexcept
+{
+    noiseShapingMode = static_cast<NoiseShapingMode> (juce::jlimit (0, 1, newNoiseShapingIndex));
+}
+
+void TruePeakLimiterEngine::setDeltaListen (bool shouldEnableDeltaListen) noexcept
+{
+    deltaListenEnabled = shouldEnableDeltaListen;
+}
+
+void TruePeakLimiterEngine::setUnityGainMonitor (bool shouldEnableUnityGainMonitor) noexcept
+{
+    unityGainMonitorEnabled = shouldEnableUnityGainMonitor;
+}
+
 float TruePeakLimiterEngine::pushSlidingMin (int channel, juce::int64 nowIndex, float value) noexcept
 {
     auto& values = slidingValues[channel];

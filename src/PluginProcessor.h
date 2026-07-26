@@ -88,5 +88,16 @@ private:
     std::atomic<float>* stereoLinkPercent = nullptr;
     std::atomic<float>* ditherShapeChoice = nullptr;
 
+    // v0.4.0 SOTA DSP additions (see ParameterIds.h). oversamplingChoice/
+    // osPhaseChoice are prepare-latched (read in prepareToPlay() only, like
+    // lookaheadMs); the rest are pushed every block.
+    std::atomic<float>* limitStyleChoice = nullptr;
+    std::atomic<float>* oversamplingChoice = nullptr;
+    std::atomic<float>* osPhaseChoice = nullptr;
+    std::atomic<float>* tpGuardEnabled = nullptr;
+    std::atomic<float>* noiseShapingChoice = nullptr;
+    std::atomic<float>* deltaListenEnabled = nullptr;
+    std::atomic<float>* unityGainMonitorEnabled = nullptr;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ApotheosisAudioProcessor)
 };
