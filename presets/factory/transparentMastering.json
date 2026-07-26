@@ -1,0 +1,27 @@
+{
+    "format": "basilica-preset-1",
+    "plugin": "com.yvesvogl.apotheosis",
+    "pluginVersion": "0.4.0",
+    "name": "Transparent Mastering",
+    "category": "Master",
+    "parameters": {
+        "inputGain": 3.0,
+        "ceiling": -1.0,
+        "release": 60.0,
+        "lookahead": 10.0,
+        "releaseCurve": 0,
+        "dither": 2,
+        "clipMix": 0.0,
+        "attack": 0.0,
+        "autoRelease": 50.0,
+        "stereoLink": 100.0,
+        "ditherShape": 0,
+        "limitStyle": 1,
+        "oversampling": 1,
+        "osPhase": 0,
+        "tpGuard": 1.0,
+        "noiseShaping": 1,
+        "deltaListen": 0.0,
+        "unityGainMonitor": 0.0
+    }
+}

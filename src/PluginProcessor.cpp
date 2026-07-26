@@ -48,6 +48,9 @@ namespace
             { BinaryData::adaptiveRiding_json, BinaryData::adaptiveRiding_jsonSize },
             { BinaryData::brightClipperBlend_json, BinaryData::brightClipperBlend_jsonSize },
             { BinaryData::cleanExportDithered_json, BinaryData::cleanExportDithered_jsonSize },
+            { BinaryData::transparentMastering_json, BinaryData::transparentMastering_jsonSize },
+            { BinaryData::punchyLoudStyle_json, BinaryData::punchyLoudStyle_jsonSize },
+            { BinaryData::safeArchivalTruePeak_json, BinaryData::safeArchivalTruePeak_jsonSize },
         };
     }
 }

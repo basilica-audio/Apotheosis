@@ -1,0 +1,27 @@
+{
+    "format": "basilica-preset-1",
+    "plugin": "com.yvesvogl.apotheosis",
+    "pluginVersion": "0.4.0",
+    "name": "Punchy Loud Style",
+    "category": "Master",
+    "parameters": {
+        "inputGain": 6.0,
+        "ceiling": -1.0,
+        "release": 30.0,
+        "lookahead": 4.0,
+        "releaseCurve": 0,
+        "dither": 0,
+        "clipMix": 35.0,
+        "attack": 0.0,
+        "autoRelease": 40.0,
+        "stereoLink": 100.0,
+        "ditherShape": 0,
+        "limitStyle": 2,
+        "oversampling": 1,
+        "osPhase": 0,
+        "tpGuard": 0.0,
+        "noiseShaping": 0,
+        "deltaListen": 0.0,
+        "unityGainMonitor": 0.0
+    }
+}

@@ -74,6 +74,9 @@ juce_add_binary_data(ApotheosisBinaryData SOURCES
     presets/factory/adaptiveRiding.json
     presets/factory/brightClipperBlend.json
     presets/factory/cleanExportDithered.json
+    presets/factory/transparentMastering.json
+    presets/factory/punchyLoudStyle.json
+    presets/factory/safeArchivalTruePeak.json
     resources/i18n/de.txt
 )
 
