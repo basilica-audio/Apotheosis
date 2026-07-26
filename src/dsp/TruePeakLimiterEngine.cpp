@@ -248,6 +248,12 @@ void TruePeakLimiterEngine::prepare (const juce::dsp::ProcessSpec& spec)
     momentaryWindow.prepare (juce::jmax (1, juce::roundToInt (0.4 * sampleRate)));
     shortTermWindow.prepare (juce::jmax (1, juce::roundToInt (3.0 * sampleRate)));
 
+    // F4 (v0.4.0): (re-)seed the Weighted path's per-channel independent
+    // dither RNG streams. The Legacy path's shared ditherRng is
+    // deliberately NOT touched here - its draw order is part of the
+    // v0.2.0 bit-exactness contract (golden dither fixture, T12).
+    psychoDither.prepare();
+
     reset();
 }
 
@@ -276,6 +282,8 @@ void TruePeakLimiterEngine::reset()
 
         previousDitherTpdf[channel] = 0.0f;
     }
+
+    psychoDither.reset();
 
     autoReleaseDepthAvgDb = 0.0;
 
@@ -1097,28 +1105,58 @@ void TruePeakLimiterEngine::processChunk (juce::dsp::AudioBlock<float>& block)
     // raw draw directly and is therefore bit-identical to v1's plain-TPDF
     // dither at every setting.
     //==================================================================
+    //
+    // F4 (v0.4.0): when noiseShaping == Weighted (and Dither != Off), the
+    // block routes through the psychoacoustic 9th-order error-feedback
+    // requantiser instead (src/dsp/PsychoacousticDither.h) - a true
+    // TPDF-dithered quantisation to the output word-length grid with the
+    // audibility-weighted feedback filter, per-channel independent RNG
+    // streams. Weighted takes precedence over the v0.2.0 ditherShape
+    // switch (documented in ParameterIds.h::noiseShaping). The Legacy
+    // branch below is the UNTOUCHED v0.2.0 code - bit-identical,
+    // including the shared-RNG draw order (T12's golden-fixture case).
+    // The same post-dither ceiling re-clamp applies to both paths.
     if (ditherMode != DitherMode::off)
     {
         const auto ditherLsb = (ditherMode == DitherMode::bit16) ? std::exp2 (-15.0f) : std::exp2 (-23.0f);
 
-        for (size_t channel = 0; channel < numChannels; ++channel)
+        if (noiseShapingMode == NoiseShapingMode::weighted)
         {
-            const auto ch = static_cast<int> (channel);
-            auto* data = block.getChannelPointer (channel);
-
             for (size_t sample = 0; sample < numSamples; ++sample)
             {
-                const auto tpdf = ditherRng.nextFloat() - ditherRng.nextFloat();
+                for (size_t channel = 0; channel < numChannels; ++channel)
+                {
+                    const auto ch = static_cast<int> (channel);
+                    auto* data = block.getChannelPointer (channel);
 
-                auto shapingSample = tpdf;
+                    const auto requantised = psychoDither.processSample (ch, data[sample], ditherLsb);
+                    data[sample] = juce::jlimit (-ceilingLinear, ceilingLinear, requantised);
+                }
 
-                if (ditherShape == DitherShape::shaped)
-                    shapingSample = (tpdf - previousDitherTpdf[ch]) * 0.5f;
+                psychoDither.advanceHistory();
+            }
+        }
+        else
+        {
+            for (size_t channel = 0; channel < numChannels; ++channel)
+            {
+                const auto ch = static_cast<int> (channel);
+                auto* data = block.getChannelPointer (channel);
 
-                previousDitherTpdf[ch] = tpdf;
+                for (size_t sample = 0; sample < numSamples; ++sample)
+                {
+                    const auto tpdf = ditherRng.nextFloat() - ditherRng.nextFloat();
 
-                const auto dithered = data[sample] + shapingSample * ditherLsb;
-                data[sample] = juce::jlimit (-ceilingLinear, ceilingLinear, dithered);
+                    auto shapingSample = tpdf;
+
+                    if (ditherShape == DitherShape::shaped)
+                        shapingSample = (tpdf - previousDitherTpdf[ch]) * 0.5f;
+
+                    previousDitherTpdf[ch] = tpdf;
+
+                    const auto dithered = data[sample] + shapingSample * ditherLsb;
+                    data[sample] = juce::jlimit (-ceilingLinear, ceilingLinear, dithered);
+                }
             }
         }
     }

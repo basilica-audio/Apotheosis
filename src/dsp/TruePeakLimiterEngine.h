@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GainEnvelopeStages.h"
+#include "PsychoacousticDither.h"
 #include "TruePeakInterpolator.h"
 
 #include <juce_dsp/juce_dsp.h>
@@ -423,6 +424,13 @@ private:
     // DitherShape::flat, which keeps Flat's output bit-identical to v1's
     // plain-TPDF dither at every setting.
     float previousDitherTpdf[maxChannels] = { 0.0f, 0.0f };
+
+    // F4 (v0.4.0): the psychoacoustic 9th-order error-feedback requantiser
+    // used when noiseShapingMode == weighted (and DitherMode != off). The
+    // Legacy path above keeps the shared ditherRng and its exact draw
+    // order untouched; this object owns its own per-channel independent
+    // RNG streams - see PsychoacousticDither.h.
+    PsychoacousticDither psychoDither;
 
     // Last commanded values (ParameterLayout defaults until a setter is
     // called), re-applied on every prepare() so re-prepare (sample-rate
