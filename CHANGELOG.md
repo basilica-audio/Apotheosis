@@ -128,6 +128,14 @@ views. Wiring them into the photoreal editor is a separate GUI PR.
   rather than v0.2.0's shared draw stream. The Legacy path keeps the shared
   stream and its exact draw order deliberately, which is what makes it
   bit-identical rather than merely equivalent.
+- Both TPDF generators drew their two random samples in a single expression
+  (`rng.nextFloat() - rng.nextFloat()`), whose operand evaluation order C++
+  leaves unspecified. Since each draw advances the RNG, compilers that chose
+  opposite orders produced exactly **negated** dither noise, so a seeded
+  render was not reproducible across toolchains (Windows disagreed with
+  macOS). The draws are now sequenced explicitly. Audibly inconsequential -
+  TPDF noise is symmetric, so both variants were equally valid dither - but
+  it makes the seeded-fixture bit-exactness contract hold on every platform.
 
 ## [0.2.0] - 2026-07-16
 

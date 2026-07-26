@@ -1313,7 +1313,14 @@ void TruePeakLimiterEngine::processChunk (juce::dsp::AudioBlock<float>& block)
 
                 for (size_t sample = 0; sample < numSamples; ++sample)
                 {
-                    const auto tpdf = ditherRng.nextFloat() - ditherRng.nextFloat();
+                    // Sequenced deliberately: see PsychoacousticDither::nextTpdf.
+                    // `a.nextFloat() - a.nextFloat()` has unspecified operand
+                    // evaluation order, so the two orders produce negated
+                    // noise and the seeded dither fixture stops being
+                    // reproducible across compilers.
+                    const auto firstDraw = ditherRng.nextFloat();
+                    const auto secondDraw = ditherRng.nextFloat();
+                    const auto tpdf = firstDraw - secondDraw;
 
                     auto shapingSample = tpdf;
 

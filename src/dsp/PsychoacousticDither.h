@@ -165,7 +165,16 @@ public:
     float nextTpdf (int channel) noexcept
     {
         auto& r = rng[juce::jlimit (0, maxChannels - 1, channel)];
-        return r.nextFloat() - r.nextFloat();
+
+        // The two draws MUST be sequenced explicitly. Written as
+        // `r.nextFloat() - r.nextFloat()` the operand evaluation order is
+        // unspecified, and because each call advances the RNG the two
+        // orders yield exactly negated noise - which made the dither output
+        // compiler-dependent (Clang and MSVC disagreed, breaking the
+        // seeded-fixture bit-exactness contract across platforms).
+        const auto first = r.nextFloat();
+        const auto second = r.nextFloat();
+        return first - second;
     }
 
     // Requantises one sample to the grid of `quantisationStep` (the output
