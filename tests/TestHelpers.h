@@ -88,6 +88,66 @@ namespace TestHelpers
         return true;
     }
 
+    // Synchronous (projection-based) amplitude of the `harmonic`-th
+    // multiple of `fundamentalHz` over [startSample, startSample +
+    // numSamples). Leakage-free when numSamples spans an integer number of
+    // fundamental periods - the caller is responsible for choosing such a
+    // window. (v0.4.0: used by the style-engine THD assertions.)
+    inline double harmonicAmplitude (const juce::AudioBuffer<float>& buffer,
+                                     int channel,
+                                     int startSample,
+                                     int numSamples,
+                                     double sampleRate,
+                                     double fundamentalHz,
+                                     int harmonic)
+    {
+        const auto* data = buffer.getReadPointer (channel, startSample);
+        const auto omega = juce::MathConstants<double>::twoPi * fundamentalHz * static_cast<double> (harmonic) / sampleRate;
+
+        double inPhase = 0.0;
+        double quadrature = 0.0;
+
+        for (int sample = 0; sample < numSamples; ++sample)
+        {
+            const auto value = static_cast<double> (data[sample]);
+            inPhase += value * std::cos (omega * sample);
+            quadrature += value * std::sin (omega * sample);
+        }
+
+        const auto scale = 2.0 / static_cast<double> (numSamples);
+        return scale * std::sqrt (inPhase * inPhase + quadrature * quadrature);
+    }
+
+    // Total harmonic distortion (ratio, not percent): RMS of harmonics
+    // 2..maxHarmonic over the fundamental's amplitude, measured
+    // synchronously (see harmonicAmplitude above).
+    inline double measureThd (const juce::AudioBuffer<float>& buffer,
+                              int channel,
+                              int startSample,
+                              int numSamples,
+                              double sampleRate,
+                              double fundamentalHz,
+                              int maxHarmonic = 20)
+    {
+        const auto fundamental = harmonicAmplitude (buffer, channel, startSample, numSamples, sampleRate, fundamentalHz, 1);
+
+        if (fundamental <= 0.0)
+            return 0.0;
+
+        double harmonicPowerSum = 0.0;
+
+        for (int harmonic = 2; harmonic <= maxHarmonic; ++harmonic)
+        {
+            if (fundamentalHz * harmonic >= sampleRate / 2.0)
+                break;
+
+            const auto amplitude = harmonicAmplitude (buffer, channel, startSample, numSamples, sampleRate, fundamentalHz, harmonic);
+            harmonicPowerSum += amplitude * amplitude;
+        }
+
+        return std::sqrt (harmonicPowerSum) / fundamental;
+    }
+
     // Independent (from the plugin's own internal engine) estimate of the
     // buffer's true (inter-sample) peak, expressed as a linear amplitude:
     // 4x-oversamples the buffer with a freshly constructed

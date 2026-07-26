@@ -4,6 +4,29 @@
 
 TruePeakLimiterEngine::TruePeakLimiterEngine() = default;
 
+// Per-style tunings (v0.4.0 brief section 3.1's table - fixed constants,
+// generic English names, no brand references). Classic never reaches this
+// table: it dispatches to the verbatim v0.2.0 code path in processChunk().
+TruePeakLimiterEngine::StyleTuning TruePeakLimiterEngine::tuningForStyle (LimitStyle style) noexcept
+{
+    switch (style)
+    {
+        case LimitStyle::punchy:
+            return { 1, 0.4f, 0.030, 0.400, 4.0 }; // lets transient tops through harder
+
+        case LimitStyle::bus:
+            return { 2, 1.0f, 0.080, 1.200, 2.0 }; // slow, glue-like
+
+        case LimitStyle::safe:
+            return { 3, 1.0f, 0.060, 1.500, 1.0 }; // max smoothness, classical/acoustic
+
+        case LimitStyle::transparent:
+        case LimitStyle::classic: // unreachable via the dispatch; keep a defined value
+        default:
+            return { 2, 1.0f, 0.050, 0.800, 2.0 }; // mastering default recommendation
+    }
+}
+
 void TruePeakLimiterEngine::LoudnessWindow::prepare (int capacitySamples)
 {
     capacity = juce::jmax (1, capacitySamples);
@@ -77,6 +100,19 @@ void TruePeakLimiterEngine::prepare (const juce::dsp::ProcessSpec& spec)
     meterDetector.prepare (sampleRate);
     guardReleaseCoeff = std::exp (-1.0 / (0.005 * sampleRate)); // 5 ms release
     guardWasEnabled = false;
+
+    // F1/F7 (v0.4.0): smoother capacity covers the full lookahead window
+    // (the largest span any style/attack combination can request); the
+    // fixed 100 Hz depth-integrator cadence and its one-pole coefficient
+    // are exact for that cadence, so Auto Release in non-Classic styles is
+    // buffer-size invariant by construction.
+    for (int channel = 0; channel < maxChannels; ++channel)
+        for (auto& box : smootherBoxes[channel])
+            box.prepare (lookaheadSamplesOS + 1);
+
+    styleTickIntervalOsSamples = juce::jmax (1, juce::roundToInt (sampleRate * oversamplingFactor / 100.0));
+    styleTickAvgCoeff = std::exp (-0.01 / autoReleaseTimeConstantSeconds);
+    activeStyle = limitStyle;
 
     totalLatencySamples = lookaheadSamplesBase + detectionLatencySamplesBase + guardDelaySamples;
 
@@ -176,6 +212,16 @@ void TruePeakLimiterEngine::reset()
     }
 
     autoReleaseDepthAvgDb = 0.0;
+
+    for (int channel = 0; channel < maxChannels; ++channel)
+    {
+        for (auto& box : smootherBoxes[channel])
+            box.resetTo (1.0f);
+
+        dualRelease[channel].seed (1.0);
+    }
+
+    styleTickCountdown = styleTickIntervalOsSamples;
 
     guardDetector.reset();
     meterDetector.reset();
@@ -473,6 +519,92 @@ void TruePeakLimiterEngine::processChunk (juce::dsp::AudioBlock<float>& block)
     const auto fastReleaseCoeff = static_cast<float> (
         std::exp (-1.0 / (0.001 * static_cast<double> (fastAttackReleaseMs) * sampleRate * oversamplingFactor)));
 
+    //==================================================================
+    // F1 (v0.4.0): style latch + per-style envelope coefficients. The
+    // style is latched once per chunk; a change re-seeds the incoming
+    // style's state from the current gain so the switch is click-free
+    // (state continuity, no snap). Classic keeps the literal v0.2.0 code
+    // path via the dispatch inside the per-sample loop below.
+    //==================================================================
+    const auto styleForChunk = limitStyle;
+
+    if (styleForChunk != activeStyle)
+    {
+        const auto incomingTuning = tuningForStyle (styleForChunk);
+
+        for (int channel = 0; channel < maxChannels; ++channel)
+        {
+            if (styleForChunk != LimitStyle::classic)
+            {
+                for (auto& box : smootherBoxes[channel])
+                    box.resetTo (currentGain[channel]);
+
+                dualRelease[channel].setFastCapDb (incomingTuning.fastCapDb);
+                dualRelease[channel].seed (currentGain[channel]);
+            }
+            else
+            {
+                // Returning to Classic: re-anchor its release/classifier
+                // state exactly as an attack would.
+                smoothReleaseStage[channel] = currentGain[channel];
+                currentEventRawSamples[channel] = 0;
+                lastCompletedEventRawSamples[channel] = std::numeric_limits<juce::int64>::max() / 2;
+            }
+        }
+
+        activeStyle = styleForChunk;
+    }
+
+    const auto fsOs = sampleRate * oversamplingFactor;
+    StyleTuning styleTuning {};
+
+    // Slow-stage coefficient including the Auto Release modulation of
+    // tau_slow via the existing asymmetric depth law - recomputed here at
+    // the chunk start and again at every fixed-rate F7 tick below (the
+    // depth average only moves at ticks, so the value is identical for any
+    // host buffer size).
+    const auto computeStyleSlowCoefficient = [this] (const StyleTuning& tuning, double fsOversampled) noexcept
+    {
+        const auto amount01 = static_cast<double> (lastAutoReleasePercent) * 0.01;
+        const auto depthNorm = juce::jlimit (0.0, 1.0, autoReleaseDepthAvgDb / static_cast<double> (autoReleaseModDepthReferenceDb));
+        const auto multiplier = depthNorm >= 0.5
+                                     ? 1.0 + amount01 * (depthNorm - 0.5) * 2.0 * autoReleaseLengthenRangeFraction
+                                     : 1.0 - amount01 * (0.5 - depthNorm) * 2.0 * autoReleaseShortenRangeFraction;
+        const auto tauSlowEffective = tuning.tauSlowSeconds * juce::jmax (0.1, multiplier);
+        return DualStageRelease::coefficientForTau (tauSlowEffective, fsOversampled);
+    };
+
+    if (styleForChunk != LimitStyle::classic)
+    {
+        styleTuning = tuningForStyle (styleForChunk);
+        activeNumBoxes = juce::jlimit (1, maxSmootherBoxes, styleTuning.numBoxes);
+
+        // Smoother span (brief section 3.1): the existing `attack`
+        // parameter scales the window - 0 ms means "use full lookahead" -
+        // then the per-style fraction applies; each cascaded box gets
+        // span/numBoxes, which keeps the total FIR span within the
+        // lookahead window (the zero-overshoot proof obligation).
+        const auto baseSpan = lastAttackMs > 0.0f
+                                   ? juce::jmin (lookaheadSamplesOS,
+                                                 juce::jmax (1, juce::roundToInt (static_cast<double> (lastAttackMs) * 0.001 * fsOs)))
+                                   : lookaheadSamplesOS;
+        const auto span = juce::jmax (1, juce::roundToInt (static_cast<float> (baseSpan) * styleTuning.smootherSpanFraction));
+        const auto boxLength = juce::jmax (1, span / activeNumBoxes);
+
+        const auto kFast = DualStageRelease::coefficientForTau (styleTuning.tauFastSeconds, fsOs);
+        const auto kSlow = computeStyleSlowCoefficient (styleTuning, fsOs);
+
+        for (int channel = 0; channel < maxChannels; ++channel)
+        {
+            for (int box = 0; box < activeNumBoxes; ++box)
+                smootherBoxes[channel][box].setLength (boxLength);
+
+            dualRelease[channel].setFastCapDb (styleTuning.fastCapDb);
+            dualRelease[channel].setFastCoefficient (kFast);
+            dualRelease[channel].setSlowCoefficient (kSlow);
+        }
+    }
+
     auto osBlock = oversampler->processSamplesUp (block);
     const auto numOSSamples = osBlock.getNumSamples();
 
@@ -516,6 +648,32 @@ void TruePeakLimiterEngine::processChunk (juce::dsp::AudioBlock<float>& block)
                                       : 1.0f;
 
             const auto lookaheadMinGain = pushSlidingMin (ch, nowIndex, rawGain);
+
+            //==========================================================
+            // Style dispatch (v0.4.0, binding structural rule of brief
+            // section 3.1): Classic is the LITERAL v0.2.0 envelope code
+            // path, kept verbatim behind this single top-level branch -
+            // not interleaved conditionals - because the golden-fixture
+            // corpus (tests/RegressionTests.cpp T0/T1) is the upgrade
+            // safety net. Non-Classic styles replace the rectangular
+            // attack + binary classifier with the cascaded-box smoother +
+            // dual concurrent release stages below.
+            //==========================================================
+            if (styleForChunk != LimitStyle::classic)
+            {
+                float smoothedGain = lookaheadMinGain;
+
+                for (int box = 0; box < activeNumBoxes; ++box)
+                    smoothedGain = smootherBoxes[ch][box].process (smoothedGain);
+
+                currentGain[ch] = dualRelease[ch].process (smoothedGain);
+
+                // Keep the Classic release stage anchored so a later
+                // switch back to Classic resumes from the live gain.
+                smoothReleaseStage[ch] = currentGain[ch];
+            }
+            else
+            {
 
             // Attack classifier event-duration tracking (v0.2.0): counts
             // consecutive samples of the WINDOWED (lookahead-min) gain below
@@ -606,6 +764,8 @@ void TruePeakLimiterEngine::processChunk (juce::dsp::AudioBlock<float>& block)
                 }
             }
 
+            } // end of the verbatim v0.2.0 Classic envelope path (style dispatch above)
+
             blockMinGain = juce::jmin (blockMinGain, currentGain[ch]);
 
             auto* channelData = osBlock.getChannelPointer (channel);
@@ -642,6 +802,34 @@ void TruePeakLimiterEngine::processChunk (juce::dsp::AudioBlock<float>& block)
             channelData[i] = outSample;
 
             blockPeakLinear = juce::jmax (blockPeakLinear, std::abs (outSample));
+        }
+
+        //==============================================================
+        // F7 (v0.4.0): fixed-rate Auto Release depth integration for the
+        // non-Classic styles - the depth average updates from the CURRENT
+        // envelope value every styleTickIntervalOsSamples (10 ms) with a
+        // one-pole coefficient computed for exactly that cadence, so the
+        // law is independent of host buffer size and of realtime vs
+        // offline rendering. Classic keeps the verbatim v0.2.0 per-chunk
+        // update further below.
+        //==============================================================
+        if (styleForChunk != LimitStyle::classic && --styleTickCountdown <= 0)
+        {
+            styleTickCountdown = styleTickIntervalOsSamples;
+
+            float minCurrentGain = 1.0f;
+
+            for (size_t channel = 0; channel < numChannels; ++channel)
+                minCurrentGain = juce::jmin (minCurrentGain, currentGain[channel]);
+
+            const auto instantaneousDepthDb = juce::jmax (0.0f, -juce::Decibels::gainToDecibels (minCurrentGain, -100.0f));
+            autoReleaseDepthAvgDb = static_cast<double> (instantaneousDepthDb)
+                                     + (autoReleaseDepthAvgDb - static_cast<double> (instantaneousDepthDb)) * styleTickAvgCoeff;
+
+            const auto kSlow = computeStyleSlowCoefficient (styleTuning, fsOs);
+
+            for (int channel = 0; channel < maxChannels; ++channel)
+                dualRelease[channel].setSlowCoefficient (kSlow);
         }
 
         delayAdvance();
@@ -749,6 +937,10 @@ void TruePeakLimiterEngine::processChunk (juce::dsp::AudioBlock<float>& block)
     // compute this same chunk's own effectiveReleaseMs above, keeping the
     // update strictly causal/one-chunk-delayed like every other smoothed
     // parameter in this engine (ceilingSmoothed, clipMixSmoothed, etc.).
+    // v0.4.0: this per-chunk law is Classic-only (verbatim v0.2.0); the
+    // non-Classic styles update the same average at F7's fixed 100 Hz
+    // cadence inside the loop above instead.
+    if (styleForChunk == LimitStyle::classic)
     {
         const auto chunkDurationSeconds = static_cast<double> (numSamples) / sampleRate;
         const auto avgCoeff = std::exp (-chunkDurationSeconds / autoReleaseTimeConstantSeconds);

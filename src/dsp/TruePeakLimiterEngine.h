@@ -1,5 +1,6 @@
 #pragma once
 
+#include "GainEnvelopeStages.h"
 #include "TruePeakInterpolator.h"
 
 #include <juce_dsp/juce_dsp.h>
@@ -439,6 +440,45 @@ private:
     NoiseShapingMode noiseShapingMode = NoiseShapingMode::legacy;
     bool deltaListenEnabled = false;
     bool unityGainMonitorEnabled = false;
+
+    //==================================================================
+    // F1/F7 (v0.4.0): style engine - cascaded-box FIR attack smoother +
+    // dual concurrent release stages (non-Classic styles only; Classic is
+    // the literal v0.2.0 code path behind the per-sample dispatch in
+    // processChunk()). Per-style tunings are fixed constants - see
+    // tuningForStyle() in the .cpp and docs/manual.md's table.
+    //==================================================================
+
+    struct StyleTuning
+    {
+        int numBoxes; // cascaded moving averages (1-3)
+        float smootherSpanFraction; // of the (attack-scaled) lookahead window
+        double tauFastSeconds;
+        double tauSlowSeconds;
+        double fastCapDb; // fast stage handles only the top this-many dB of GR
+    };
+
+    static StyleTuning tuningForStyle (LimitStyle style) noexcept;
+
+    static constexpr int maxSmootherBoxes = 3;
+
+    BoxFilter smootherBoxes[maxChannels][maxSmootherBoxes];
+    DualStageRelease dualRelease[maxChannels];
+
+    // The style the per-sample state currently belongs to; latched at the
+    // top of each chunk. A change re-seeds the target style's release/
+    // smoother state from the current gain (click-free switch, no snap).
+    LimitStyle activeStyle = LimitStyle::classic;
+    int activeNumBoxes = 2;
+
+    // F7: in non-Classic styles the Auto Release depth average updates at a
+    // fixed 100 Hz internal cadence (styleTickIntervalOsSamples of OS-rate
+    // samples per tick, coefficient computed for exactly that cadence) -
+    // independent of the host buffer size, unlike Classic's verbatim
+    // v0.2.0 once-per-chunk law.
+    int styleTickIntervalOsSamples = 1;
+    int styleTickCountdown = 1;
+    double styleTickAvgCoeff = 0.0;
 
     //==================================================================
     // F2 (v0.4.0): true-peak guard + measured true-peak metering.

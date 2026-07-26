@@ -152,16 +152,20 @@ namespace truepeak_detail
 {
     constexpr bool phasesAreSymmetric()
     {
+        // Written as ordered comparisons (not ==) to stay clean under
+        // -Wfloat-equal; identical literals compare exactly either way.
+        const auto differs = [] (float a, float b) constexpr { return a < b || a > b; };
+
         for (int tap = 0; tap < TruePeakInterpolator::numTapsPerPhase; ++tap)
         {
             const auto mirrored = static_cast<size_t> (TruePeakInterpolator::numTapsPerPhase - 1 - tap);
 
-            if (TruePeakInterpolator::coefficients[3][static_cast<size_t> (tap)]
-                != TruePeakInterpolator::coefficients[0][mirrored])
+            if (differs (TruePeakInterpolator::coefficients[3][static_cast<size_t> (tap)],
+                         TruePeakInterpolator::coefficients[0][mirrored]))
                 return false;
 
-            if (TruePeakInterpolator::coefficients[2][static_cast<size_t> (tap)]
-                != TruePeakInterpolator::coefficients[1][mirrored])
+            if (differs (TruePeakInterpolator::coefficients[2][static_cast<size_t> (tap)],
+                         TruePeakInterpolator::coefficients[1][mirrored]))
                 return false;
         }
 
