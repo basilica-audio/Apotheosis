@@ -7,6 +7,136 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-27
+
+State-of-the-art DSP pass. Seven new controls, a rewritten gain-envelope
+architecture, a measured (rather than assumed) true-peak ceiling, and
+delivery-grade loudness metering. **Every new parameter's default reproduces
+v0.2.0's output bit-for-bit** - verified against committed v0.2.0 golden
+renders, not asserted - with one documented exception noted under *Changed*.
+
+No editor changes: the seven parameters are host-visible and automatable
+through the APVTS layout, and hosts surface them in their generic parameter
+views. Wiring them into the photoreal editor is a separate GUI PR.
+
+### Added
+
+- **Style** (`limitStyle`, Classic/Transparent/Punchy/Bus/Safe, default
+  Classic): the release's headline feature. The four non-Classic styles
+  replace the rectangular sliding-minimum attack with a **cascaded-box FIR
+  smoother** and the binary transient classifier with **two concurrent
+  release followers** (a depth-capped fast stage for transient tops, a slow
+  stage carrying programme gain reduction, min-combined).
+  - The smoother makes zero overshoot a **structural property**: a finite
+    mean of values each at least the window minimum is itself at least that
+    minimum. Asserted with the safety clamp *bypassed* over 10 000
+    randomised signals x 4 styles x 3 lookahead settings, so the test proves
+    the algorithm rather than the clamp.
+  - Low-frequency behaviour, measured: 50 Hz driven 3 dB over the ceiling at
+    10 ms lookahead measures well under the 1 % THD bound in Transparent
+    (~1.7e-8). **Classic measures identically clean at that setting** - this
+    engine's sliding-minimum window has always been lookahead-sized, so at
+    10 ms it already bridges the 50 Hz half-period. The distortion the
+    smoother addresses is therefore a narrower win than a Classic-vs-styles
+    THD gap would suggest; what the test does establish is that the window is
+    what does the work (shrink the lookahead to 3 ms and the same Transparent
+    render distorts to 5.5 %).
+  - Classic is the **literal v0.2.0 code path** behind a top-level dispatch,
+    not a conditional threaded through it.
+  - In non-Classic styles, **Attack** gains a second meaning: it sets the
+    smoother's span, capped at Lookahead, with 0 ms meaning "use the full
+    lookahead". Range, name and default unchanged.
+- **Oversampling** (`oversampling`, 4x/8x/16x, default 4x) and **OS Filter**
+  (`osPhase`, Minimum/Linear Phase, default Minimum). 8x/16x and every Linear
+  Phase configuration use custom **decimator-weighted** stage specs (stage 0
+  spends -106 dB on the way down vs -86 dB up), correcting JUCE's stock
+  priorities - audible alias energy folds back in the decimator. Measured
+  alias floors: -70 dB at 4x, -90 dB at 8x, -100 dB at 16x Linear;
+  pass-through flat to +-0.1 dB to 20 kHz for all six combinations.
+  Auto-derates one factor step at 96 kHz and above, two at 176.4 kHz and
+  above, without changing the stored parameter value.
+  **Both are prepare-latched with exactly the existing `lookahead` contract**
+  - they take effect at the next host-driven `prepareToPlay()`, not live.
+- **True Peak Guard** (`tpGuard`, default Off): a BS.1770-4-compliant 4x
+  interpolating detector on the base-rate output, ducking by exactly the
+  measured excess for exactly its duration (attack under 0.1 ms, release
+  5 ms). Turns the Ceiling from a margin into a measurement.
+- **Noise Shaping** (`noiseShaping`, Legacy/Weighted, default Legacy): a
+  9th-order weighted error-feedback requantiser with per-channel TPDF,
+  measuring at least 15 dB of F-weighted noise-floor improvement over flat
+  TPDF at 16-bit. Coefficients are project-owned (least-squares fit of
+  `|1 - C(z)|` to an inverse F-weighted audibility curve; Lipshitz/
+  Wannamaker/Vanderkooy JAES 1991-class method) - **no proprietary curve is
+  copied**. When Weighted, it supersedes `ditherShape`.
+- **Delta** (`deltaListen`, default Off): monitors what the limiter removes,
+  via a second filter-identical oversampler path so the subtraction actually
+  nulls (a signal 6 dB under the ceiling gives a delta below -100 dBFS RMS).
+  Crossfaded over 10 ms; bypasses dither; still clamped.
+- **Unity Gain** (`unityGainMonitor`, default Off): trims the output by
+  minus Input Gain for loudness-matched drive auditioning. Delta wins when
+  both are on.
+- **Loudness Range (LRA)** per EBU Tech 3342, verified against the Tech 3342
+  vectors to within 1 LU (`getLoudnessRangeLu()`).
+- **True-peak max-hold and maximum-gain-reduction readouts**
+  (`getTruePeakMaxHoldDb()`, `getMaxGainReductionDb()`).
+- **Three factory presets** (11 total): Transparent Mastering, Punchy Loud
+  Style, Safe Archival (True Peak). The eight existing presets are
+  byte-identical.
+- **Committed v0.2.0 golden fixtures** (`tests/fixtures/v020/`, raw float32
+  renders plus a manifest with settings, SHA-256 and generating platform),
+  generated in the branch's first commit while the engine was still
+  byte-identical to v0.2.0. Every later commit is compared against them.
+
+### Changed
+
+- **Latency increases by 6 samples at sample rates below 176.4 kHz** (+0 at
+  and above). The True Peak Guard's alignment delay is always in the signal
+  path whether the guard is on or off, so automating `tpGuard` can never
+  glitch host delay compensation. It is a **pure integer delay** - no sample
+  value changes - and it is constant per rate-policy tier, not fs-scaled.
+  Null-test workflows comparing against a v0.2.0 render need to shift by
+  exactly this constant.
+- **Integrated LUFS is now spec-gated - a metering-only change, no audio
+  change.** Full ITU-R BS.1770-4: 400 ms blocks at 75 % overlap, -70 LUFS
+  absolute gate plus the -10 LU relative gate, two-pass over an O(1)-memory
+  histogram. Verified against the EBU Tech 3341 minimum set to within
+  0.1 LU. v0.2.0 shipped a documented approximation, so **Integrated
+  readings will differ from v0.2.0's on the same material** - the new values
+  are the correct ones. The "documented deviation" caveats are removed from
+  `docs/architecture.md`.
+- **The output true-peak readout is now a measurement**, produced by the
+  BS.1770-4 interpolator at the base rate after downsampling, rather than an
+  oversampled-domain absolute-peak estimate. Also metering-only.
+- **Auto Release is buffer-size invariant in non-Classic styles**: the
+  gain-reduction depth integrator runs at a fixed 100 Hz internal cadence
+  instead of once per host chunk, so a render at 64 samples nulls against
+  the same render at 2048 to at least 80 dB. Classic keeps the v0.2.0
+  chunk-rate law verbatim, and is exempt by design.
+- **State schema bumped to v3.** `stateVersion` is written as a property on
+  the APVTS root tree; absent-property states are inferred as v1/v2 and all
+  seven new IDs fall back to their neutral defaults. Foreign root-tree
+  properties survive the round-trip untouched.
+- Parameter IDs gained a binding repo contract: **never extend an existing
+  `AudioParameterChoice`'s StringArray**, because choice parameters store
+  normalised values and appending an entry silently re-maps every saved
+  session. Guarded by a choice-mapping freeze test. This is why noise
+  shaping is a new parameter rather than a third `ditherShape` entry.
+
+### Fixed
+
+- The Weighted dither path uses **one RNG per channel**, distinctly seeded,
+  rather than v0.2.0's shared draw stream. The Legacy path keeps the shared
+  stream and its exact draw order deliberately, which is what makes it
+  bit-identical rather than merely equivalent.
+- Both TPDF generators drew their two random samples in a single expression
+  (`rng.nextFloat() - rng.nextFloat()`), whose operand evaluation order C++
+  leaves unspecified. Since each draw advances the RNG, compilers that chose
+  opposite orders produced exactly **negated** dither noise, so a seeded
+  render was not reproducible across toolchains (Windows disagreed with
+  macOS). The draws are now sequenced explicitly. Audibly inconsequential -
+  TPDF noise is symmetric, so both variants were equally valid dither - but
+  it makes the seeded-fixture bit-exactness contract hold on every platform.
+
 ## [0.2.0] - 2026-07-16
 
 ### Added

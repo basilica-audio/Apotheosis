@@ -68,6 +68,14 @@ public:
     float getShortTermLufs() const noexcept { return engine.getShortTermLufs(); }
     float getIntegratedLufs() const noexcept { return engine.getIntegratedLufs(); }
 
+    // v0.4.0 metering pack (F5/F2): spec-gated LRA, resettable true-peak
+    // max hold and deepest-GR hold - see TruePeakLimiterEngine.h.
+    float getLoudnessRangeLu() const noexcept { return engine.getLoudnessRangeLu(); }
+    float getTruePeakMaxHoldDb() const noexcept { return engine.getTruePeakMaxHoldDb(); }
+    void resetTruePeakMaxHold() noexcept { engine.resetTruePeakMaxHold(); }
+    float getMaxGainReductionDb() const noexcept { return engine.getMaxGainReductionDb(); }
+    void resetMaxGainReduction() noexcept { engine.resetMaxGainReduction(); }
+
 private:
     TruePeakLimiterEngine engine;
 
@@ -87,6 +95,17 @@ private:
     std::atomic<float>* autoReleasePercent = nullptr;
     std::atomic<float>* stereoLinkPercent = nullptr;
     std::atomic<float>* ditherShapeChoice = nullptr;
+
+    // v0.4.0 SOTA DSP additions (see ParameterIds.h). oversamplingChoice/
+    // osPhaseChoice are prepare-latched (read in prepareToPlay() only, like
+    // lookaheadMs); the rest are pushed every block.
+    std::atomic<float>* limitStyleChoice = nullptr;
+    std::atomic<float>* oversamplingChoice = nullptr;
+    std::atomic<float>* osPhaseChoice = nullptr;
+    std::atomic<float>* tpGuardEnabled = nullptr;
+    std::atomic<float>* noiseShapingChoice = nullptr;
+    std::atomic<float>* deltaListenEnabled = nullptr;
+    std::atomic<float>* unityGainMonitorEnabled = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ApotheosisAudioProcessor)
 };

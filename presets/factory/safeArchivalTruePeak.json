@@ -1,0 +1,27 @@
+{
+    "format": "basilica-preset-1",
+    "plugin": "com.yvesvogl.apotheosis",
+    "pluginVersion": "0.4.0",
+    "name": "Safe Archival (True Peak)",
+    "category": "Master",
+    "parameters": {
+        "inputGain": 0.0,
+        "ceiling": -2.0,
+        "release": 120.0,
+        "lookahead": 20.0,
+        "releaseCurve": 2,
+        "dither": 2,
+        "clipMix": 0.0,
+        "attack": 0.0,
+        "autoRelease": 60.0,
+        "stereoLink": 100.0,
+        "ditherShape": 0,
+        "limitStyle": 4,
+        "oversampling": 2,
+        "osPhase": 1,
+        "tpGuard": 1.0,
+        "noiseShaping": 1,
+        "deltaListen": 0.0,
+        "unityGainMonitor": 0.0
+    }
+}

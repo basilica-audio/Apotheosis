@@ -1,6 +1,7 @@
 #include "PluginProcessor.h"
 #include "params/ParameterIds.h"
 #include "dsp/TruePeakLimiterEngine.h"
+#include "dsp/TruePeakInterpolator.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -28,7 +29,7 @@ TEST_CASE ("getLatencySamples() reports Lookahead plus the oversampler's detecti
     CHECK (processor.getLatencySamples() > 0); // Lookahead + oversampling always contribute some latency
 }
 
-TEST_CASE ("Latency equals lookaheadSamples + detectionLatency for an explicit Lookahead value", "[latency]")
+TEST_CASE ("Latency equals lookaheadSamples + detectionLatency + guard delay for an explicit Lookahead value", "[latency]")
 {
     constexpr double sampleRate = 44100.0;
     constexpr float lookaheadMs = 10.0f;
@@ -50,8 +51,16 @@ TEST_CASE ("Latency equals lookaheadSamples + detectionLatency for an explicit L
     const auto detectionLatency = static_cast<int> (std::round (referenceOversampler.getLatencyInSamples()));
 
     const auto expectedLookaheadSamples = juce::roundToInt (lookaheadMs * 0.001 * sampleRate);
-    const auto expectedTotal = expectedLookaheadSamples + detectionLatency;
 
+    // v0.4.0 (sanctioned edit, brief section 6 acceptance gate #2): the
+    // true-peak-guard alignment delay joined the reported total - a
+    // CONSTANT per rate-policy tier (+6 base samples below 176.4 kHz, +0
+    // at/above; brief section 3.2's table, NOT fs-scaled), always in the
+    // path so that automating tpGuard can never change host PDC.
+    const auto guardDelay = TruePeakInterpolator::guardDelaySamplesForSampleRate (sampleRate);
+    const auto expectedTotal = expectedLookaheadSamples + detectionLatency + guardDelay;
+
+    CHECK (guardDelay == 6);
     CHECK (engine.getLatencySamples() == expectedTotal);
 }
 

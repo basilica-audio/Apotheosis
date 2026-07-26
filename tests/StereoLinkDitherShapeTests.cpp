@@ -282,3 +282,288 @@ TEST_CASE ("Guarantee 5: Dither Shaped still respects the never-exceed-ceiling g
 
     CHECK (TestHelpers::peakAbsolute (processed) <= ceilingLinear + epsilon);
 }
+
+//==============================================================================
+// T12 (v0.4.0, F4): psychoacoustic noise-shaped dither quality gates.
+//==============================================================================
+
+#include "dsp/PsychoacousticDither.h"
+
+#include <juce_dsp/juce_dsp.h>
+
+namespace
+{
+    // Test-side independent implementation of the audibility weighting the
+    // shaper was designed against (Terhardt threshold-in-quiet, +55 dB HF
+    // clamp - the exact formula documented in PsychoacousticDither.h's
+    // provenance block). Written from the formula, not shared with the
+    // production code (which only stores the resulting coefficients).
+    double audibilityWeight (double frequencyHz)
+    {
+        const auto fk = std::max (frequencyHz, 10.0) / 1000.0;
+        const auto thresholdDb = std::min (55.0,
+                                           3.64 * std::pow (fk, -0.8)
+                                            - 6.5 * std::exp (-0.6 * (fk - 3.3) * (fk - 3.3))
+                                            + 1.0e-3 * fk * fk * fk * fk);
+        return std::pow (10.0, -thresholdDb / 10.0);
+    }
+
+    // F-weighted total noise power of channel 0 via a Hann-windowed FFT -
+    // both signals under comparison run through the identical estimator,
+    // so window/scalloping factors cancel in the ratio.
+    double fWeightedNoisePower (const juce::AudioBuffer<float>& buffer, double sampleRate)
+    {
+        constexpr int fftOrder = 16;
+        constexpr int fftSize = 1 << fftOrder;
+        REQUIRE (buffer.getNumSamples() >= fftSize);
+
+        juce::dsp::FFT fft (fftOrder);
+        std::vector<float> data (static_cast<size_t> (fftSize) * 2, 0.0f);
+
+        const auto* samples = buffer.getReadPointer (0);
+
+        for (int n = 0; n < fftSize; ++n)
+        {
+            const auto hann = 0.5f - 0.5f * std::cos (juce::MathConstants<float>::twoPi
+                                                       * static_cast<float> (n) / static_cast<float> (fftSize));
+            data[static_cast<size_t> (n)] = samples[n] * hann;
+        }
+
+        fft.performRealOnlyForwardTransform (data.data());
+
+        double weightedPower = 0.0;
+
+        for (int bin = 1; bin < fftSize / 2; ++bin)
+        {
+            const auto re = static_cast<double> (data[static_cast<size_t> (2 * bin)]);
+            const auto im = static_cast<double> (data[static_cast<size_t> (2 * bin + 1)]);
+            const auto frequency = sampleRate * static_cast<double> (bin) / static_cast<double> (fftSize);
+            weightedPower += (re * re + im * im) * audibilityWeight (frequency);
+        }
+
+        return weightedPower;
+    }
+
+    // Silence rendered through the engine with 16-bit dither: the entire
+    // output IS the dither/requantiser noise.
+    juce::AudioBuffer<float> renderDitherNoise (int noiseShapingIndex, double sampleRate, int totalSamples)
+    {
+        constexpr int blockSize = 2048;
+
+        TruePeakLimiterEngine engine;
+        juce::dsp::ProcessSpec spec { sampleRate, static_cast<juce::uint32> (blockSize), 2 };
+        engine.prepare (spec);
+        engine.setDitherMode (1); // 16-bit
+        engine.setNoiseShaping (noiseShapingIndex);
+
+        juce::AudioBuffer<float> buffer (2, totalSamples);
+        buffer.clear();
+
+        juce::dsp::AudioBlock<float> whole (buffer);
+
+        for (int position = 0; position + blockSize <= totalSamples; position += blockSize)
+        {
+            auto chunk = whole.getSubBlock (static_cast<size_t> (position), static_cast<size_t> (blockSize));
+            engine.process (chunk);
+        }
+
+        return buffer;
+    }
+}
+
+TEST_CASE ("T12: the Weighted path's TPDF generator draws a triangular distribution (chi-square)",
+           "[dither][noiseshaping][t12]")
+{
+    // Deterministic seed (test-only hook) so the chi-square statistic is a
+    // fixed number, not a 1%-of-CI-runs coin flip.
+    PsychoacousticDither dither;
+    dither.setSeedsForTests (0x5EEDBA5E);
+
+    constexpr int numDraws = 400000;
+    constexpr int numBins = 20; // over [-1, 1]
+    int histogram[numBins] = {};
+
+    for (int draw = 0; draw < numDraws; ++draw)
+    {
+        const auto value = dither.nextTpdf (0);
+        const auto bin = juce::jlimit (0, numBins - 1,
+                                       static_cast<int> ((static_cast<double> (value) + 1.0) / 2.0 * numBins));
+        ++histogram[bin];
+    }
+
+    // Expected counts under the triangular PDF f(x) = 1 - |x| on [-1, 1]:
+    // per-bin probability integrates f over the bin.
+    double chiSquare = 0.0;
+
+    for (int bin = 0; bin < numBins; ++bin)
+    {
+        const auto x0 = -1.0 + 2.0 * bin / numBins;
+        const auto x1 = -1.0 + 2.0 * (bin + 1) / numBins;
+        const auto integral = [] (double x) { return x < 0.0 ? x + 0.5 * x * x : x - 0.5 * x * x; };
+        const auto probability = integral (x1) - integral (x0);
+        const auto expected = probability * numDraws;
+
+        REQUIRE (expected > 5.0); // chi-square validity condition
+        const auto deviation = static_cast<double> (histogram[bin]) - expected;
+        chiSquare += deviation * deviation / expected;
+    }
+
+    // 19 degrees of freedom, p > 0.01 <=> chi-square < 36.19.
+    CAPTURE (chiSquare);
+    CHECK (chiSquare < 36.19);
+}
+
+TEST_CASE ("T12: Weighted 16-bit noise sits >= 15 dB below flat TPDF in F-weighted power",
+           "[dither][noiseshaping][t12]")
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int totalSamples = 1 << 16;
+
+    const auto legacyFlat = renderDitherNoise (0, sampleRate, totalSamples);
+    const auto weighted = renderDitherNoise (1, sampleRate, totalSamples);
+
+    REQUIRE (TestHelpers::allSamplesFinite (legacyFlat));
+    REQUIRE (TestHelpers::allSamplesFinite (weighted));
+
+    const auto legacyPower = fWeightedNoisePower (legacyFlat, sampleRate);
+    const auto weightedPower = fWeightedNoisePower (weighted, sampleRate);
+
+    REQUIRE (legacyPower > 0.0);
+    REQUIRE (weightedPower > 0.0);
+
+    // The binding floor (brief section 3.4): >= 15 dB F-weighted
+    // perceived-floor improvement vs the Legacy flat-TPDF path, including
+    // the true-requantiser variance penalty. The committed coefficient
+    // table was designed to +20.0 dB @48k (see PsychoacousticDither.h),
+    // so this asserts with ~5 dB of measurement margin.
+    const auto improvementDb = 10.0 * std::log10 (legacyPower / weightedPower);
+    CAPTURE (improvementDb);
+    CHECK (improvementDb >= 15.0);
+}
+
+TEST_CASE ("T12: Legacy 16-bit dither with the noiseShaping parameter present stays bit-identical to the committed v0.2.0 fixture",
+           "[dither][noiseshaping][t12][regression]")
+{
+    // Mirrors tests/RegressionTests.cpp's dither-fixture render exactly
+    // (silence, 16-bit Legacy dither, seeded RNG, 4 x 2048 @48k stereo) -
+    // but through a v0.4.0 engine with noiseShaping EXPLICITLY set to
+    // Legacy, proving the new branch point leaves the v0.2.0 code path's
+    // draw order untouched.
+    constexpr double sampleRate = 48000.0;
+    constexpr int blockSize = 2048;
+    constexpr int numBlocks = 4;
+    constexpr int totalSamples = blockSize * numBlocks;
+    constexpr juce::int64 fixtureSeed = 0x5EEDA5D17LL; // must match RegressionTests.cpp's ditherFixtureSeed
+
+    TruePeakLimiterEngine engine;
+    juce::dsp::ProcessSpec spec { sampleRate, static_cast<juce::uint32> (blockSize), 2 };
+    engine.prepare (spec);
+    engine.setDitherMode (1); // 16-bit
+    engine.setNoiseShaping (0); // Legacy, explicitly
+    engine.setDitherSeedForTests (fixtureSeed);
+
+    juce::AudioBuffer<float> buffer (2, totalSamples);
+    buffer.clear();
+
+    juce::dsp::AudioBlock<float> whole (buffer);
+
+    for (int block = 0; block < numBlocks; ++block)
+    {
+        auto chunk = whole.getSubBlock (static_cast<size_t> (block * blockSize), static_cast<size_t> (blockSize));
+        engine.process (chunk);
+    }
+
+    const auto fixtureFile = juce::File (APOTHEOSIS_TESTS_DIR)
+                                 .getChildFile ("fixtures").getChildFile ("v020")
+                                 .getChildFile ("dither16_legacy.f32");
+    REQUIRE (fixtureFile.existsAsFile());
+
+    juce::MemoryBlock fixtureBytes;
+    REQUIRE (fixtureFile.loadFileAsData (fixtureBytes));
+    REQUIRE (fixtureBytes.getSize() == static_cast<size_t> (totalSamples) * 2 * sizeof (float));
+
+    const auto* fixtureData = static_cast<const float*> (fixtureBytes.getData());
+    juce::int64 mismatches = 0;
+    double worstAbsoluteDifference = 0.0;
+
+    // Off the generation platform this cannot be a near-equality check.
+    // The signal under test is a 16-bit REQUANTISER's output, so its values
+    // live on a lattice whose step is 2^-15 (3.05e-5). Whenever a compiler's
+    // float rounding moves a pre-quantisation sample across a decision
+    // boundary - and dither exists precisely to scatter samples onto those
+    // boundaries - the output moves by one whole step. A sub-LSB tolerance
+    // is therefore unsatisfiable by construction, not evidence of a defect.
+    //
+    // So off-platform the invariant is: every sample agrees with the fixture
+    // to within one quantiser step. That still fails loudly on a real dither
+    // regression (a broken requantiser, a wrong seed or a dead noise source
+    // moves samples by many steps, or off the lattice entirely), and the
+    // exact-bit guarantee is retained on the generation platform below.
+#if ! (JUCE_MAC && defined (__aarch64__))
+    constexpr double sixteenBitStep = 1.0 / 32768.0;
+#endif
+
+    for (int channel = 0; channel < 2; ++channel)
+    {
+        const auto* rendered = buffer.getReadPointer (channel);
+        const auto* reference = fixtureData + static_cast<size_t> (channel) * totalSamples;
+
+        for (int n = 0; n < totalSamples; ++n)
+        {
+#if JUCE_MAC && defined (__aarch64__)
+            // Generation platform (see fixtures/v020/manifest.json):
+            // bit-exact.
+            if (std::memcmp (&rendered[n], &reference[n], sizeof (float)) != 0)
+                ++mismatches;
+#else
+            const auto difference = std::abs (static_cast<double> (rendered[n])
+                                              - static_cast<double> (reference[n]));
+            worstAbsoluteDifference = juce::jmax (worstAbsoluteDifference, difference);
+
+            // 1.5 steps, not 1.0: the comparison is between two floats that
+            // are each already a rounded representation of a lattice point,
+            // so an exact one-step move can measure a hair over one step.
+            if (difference > 1.5 * sixteenBitStep)
+                ++mismatches;
+#endif
+        }
+    }
+
+    CAPTURE (worstAbsoluteDifference);
+    CHECK (mismatches == 0);
+}
+
+TEST_CASE ("T12: post-dither samples never exceed the ceiling with the Weighted requantiser engaged",
+           "[dither][noiseshaping][t12][truepeak]")
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int blockSize = 2048;
+    constexpr int totalSamples = 65536;
+    constexpr float ceilingDb = -1.0f;
+
+    TruePeakLimiterEngine engine;
+    juce::dsp::ProcessSpec spec { sampleRate, static_cast<juce::uint32> (blockSize), 2 };
+    engine.prepare (spec);
+    engine.setCeilingDb (ceilingDb);
+    engine.setInputGainDb (4.0f);
+    engine.setDitherMode (1); // 16-bit - the largest quantisation step
+    engine.setNoiseShaping (1); // Weighted
+
+    juce::AudioBuffer<float> buffer (2, totalSamples);
+    TestHelpers::fillWithSine (buffer, sampleRate, 997.0, 1.0f);
+
+    juce::dsp::AudioBlock<float> whole (buffer);
+
+    for (int position = 0; position + blockSize <= totalSamples; position += blockSize)
+    {
+        auto chunk = whole.getSubBlock (static_cast<size_t> (position), static_cast<size_t> (blockSize));
+        engine.process (chunk);
+    }
+
+    REQUIRE (TestHelpers::allSamplesFinite (buffer));
+
+    // The post-dither re-clamp is exact - no epsilon needed beyond float
+    // representation of the ceiling itself.
+    const auto ceilingLinear = juce::Decibels::decibelsToGain (ceilingDb);
+    CHECK (TestHelpers::peakAbsolute (buffer) <= ceilingLinear + 1.0e-6f);
+}

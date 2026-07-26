@@ -369,3 +369,173 @@ TEST_CASE ("Clip Mix produces a different (louder/more saturated) result than 0%
 
     CHECK (rmsNoClip != Catch::Approx (rmsFullClip).margin (1e-5));
 }
+
+//==============================================================================
+// T13 (v0.4.0, F6): audition tools - Delta listen + Unity Gain monitor.
+//==============================================================================
+
+namespace
+{
+    // Streams a continuous sine through the engine in fixed blocks.
+    void streamSine (TruePeakLimiterEngine& engine, juce::AudioBuffer<float>& buffer,
+                     double sampleRate, double frequencyHz, float amplitude,
+                     int blockSize, int totalSamples)
+    {
+        juce::dsp::AudioBlock<float> whole (buffer);
+
+        for (int position = 0; position + blockSize <= totalSamples; position += blockSize)
+        {
+            // Refill each block from the continuous phase so the engine
+            // sees one unbroken tone (the buffer is processed in place).
+            for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+            {
+                auto* data = buffer.getWritePointer (channel) + position;
+
+                for (int n = 0; n < blockSize; ++n)
+                {
+                    const auto phase = juce::MathConstants<double>::twoPi * frequencyHz
+                                        * static_cast<double> (position + n) / sampleRate;
+                    data[n] = amplitude * static_cast<float> (std::sin (phase));
+                }
+            }
+
+            auto chunk = whole.getSubBlock (static_cast<size_t> (position), static_cast<size_t> (blockSize));
+            engine.process (chunk);
+        }
+    }
+}
+
+TEST_CASE ("T13: Delta on a signal 6 dB under the ceiling is near-silence (nothing is being removed)",
+           "[dsp][delta][t13]")
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int blockSize = 2048;
+    constexpr int totalSamples = 65536;
+    constexpr float ceilingDb = -1.0f;
+    const auto amplitude = juce::Decibels::decibelsToGain (ceilingDb - 6.0f);
+
+    TruePeakLimiterEngine engine;
+    engine.setDeltaListen (true); // engaged from the very first sample
+    juce::dsp::ProcessSpec spec { sampleRate, static_cast<juce::uint32> (blockSize), 2 };
+    engine.prepare (spec);
+    engine.setCeilingDb (ceilingDb);
+
+    juce::AudioBuffer<float> buffer (2, totalSamples);
+    streamSine (engine, buffer, sampleRate, 997.0, amplitude, blockSize, totalSamples);
+
+    REQUIRE (TestHelpers::allSamplesFinite (buffer));
+
+    // Skip the leading region (engine latency + the 10 ms crossfade ramp +
+    // the dry oversampler's settle) and measure the steady-state residue.
+    const auto skip = engine.getLatencySamples() + juce::roundToInt (0.05 * sampleRate);
+    juce::AudioBuffer<float> tail (2, totalSamples - skip);
+
+    for (int channel = 0; channel < 2; ++channel)
+        tail.copyFrom (channel, 0, buffer, channel, skip, totalSamples - skip);
+
+    const auto residualRmsDb = juce::Decibels::gainToDecibels (static_cast<float> (TestHelpers::rms (tail)), -200.0f);
+    CAPTURE (residualRmsDb);
+    CHECK (residualRmsDb <= -100.0f);
+}
+
+TEST_CASE ("T13: Delta on a heavily limited signal carries real energy (what limiting removes)",
+           "[dsp][delta][t13]")
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int blockSize = 2048;
+    constexpr int totalSamples = 65536;
+
+    TruePeakLimiterEngine engine;
+    engine.setDeltaListen (true);
+    juce::dsp::ProcessSpec spec { sampleRate, static_cast<juce::uint32> (blockSize), 2 };
+    engine.prepare (spec);
+    engine.setCeilingDb (-6.0f);
+    engine.setInputGainDb (6.0f); // ~12 dB of demanded reduction on a near-full-scale tone
+
+    juce::AudioBuffer<float> buffer (2, totalSamples);
+    streamSine (engine, buffer, sampleRate, 120.0, 0.9f, blockSize, totalSamples);
+
+    REQUIRE (TestHelpers::allSamplesFinite (buffer));
+
+    const auto skip = engine.getLatencySamples() + juce::roundToInt (0.05 * sampleRate);
+    juce::AudioBuffer<float> tail (2, totalSamples - skip);
+
+    for (int channel = 0; channel < 2; ++channel)
+        tail.copyFrom (channel, 0, buffer, channel, skip, totalSamples - skip);
+
+    const auto residualRmsDb = juce::Decibels::gainToDecibels (static_cast<float> (TestHelpers::rms (tail)), -200.0f);
+    CAPTURE (residualRmsDb);
+    CHECK (residualRmsDb > -40.0f); // the removed content is clearly audible material
+}
+
+TEST_CASE ("T13: Unity Gain monitor holds output loudness within 0.05 dB of the 0 dB-drive reference",
+           "[dsp][unitygain][t13]")
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int blockSize = 2048;
+    constexpr int totalSamples = 65536;
+    constexpr float amplitude = 0.25f; // stays far under the ceiling even at +6 dB drive
+
+    const auto renderTailRms = [] (float inputGainDb, bool unityMonitor) -> double
+    {
+        TruePeakLimiterEngine engine;
+        engine.setInputGainDb (inputGainDb);
+        engine.setUnityGainMonitor (unityMonitor);
+        juce::dsp::ProcessSpec spec { sampleRate, static_cast<juce::uint32> (blockSize), 2 };
+        engine.prepare (spec);
+        engine.setCeilingDb (0.0f);
+
+        juce::AudioBuffer<float> buffer (2, totalSamples);
+        streamSine (engine, buffer, sampleRate, 997.0, amplitude, blockSize, totalSamples);
+
+        const auto skip = engine.getLatencySamples() + juce::roundToInt (0.1 * sampleRate);
+        juce::AudioBuffer<float> tail (2, totalSamples - skip);
+
+        for (int channel = 0; channel < 2; ++channel)
+            tail.copyFrom (channel, 0, buffer, channel, skip, totalSamples - skip);
+
+        return TestHelpers::rms (tail);
+    };
+
+    const auto reference = renderTailRms (0.0f, false);
+    const auto monitored = renderTailRms (6.0f, true);
+
+    REQUIRE (reference > 0.0);
+    REQUIRE (monitored > 0.0);
+
+    const auto deviationDb = std::abs (20.0 * std::log10 (monitored / reference));
+    CAPTURE (deviationDb);
+    CHECK (deviationDb < 0.05);
+}
+
+TEST_CASE ("T13: when Delta and Unity Gain are both engaged, Delta wins",
+           "[dsp][delta][unitygain][t13]")
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int blockSize = 2048;
+    constexpr int totalSamples = 65536;
+    const auto amplitude = juce::Decibels::decibelsToGain (-7.0f); // 6 dB under the -1 dB ceiling
+
+    TruePeakLimiterEngine engine;
+    engine.setDeltaListen (true);
+    engine.setUnityGainMonitor (true);
+    engine.setInputGainDb (0.0f);
+    juce::dsp::ProcessSpec spec { sampleRate, static_cast<juce::uint32> (blockSize), 2 };
+    engine.prepare (spec);
+    engine.setCeilingDb (-1.0f);
+
+    juce::AudioBuffer<float> buffer (2, totalSamples);
+    streamSine (engine, buffer, sampleRate, 997.0, amplitude, blockSize, totalSamples);
+
+    const auto skip = engine.getLatencySamples() + juce::roundToInt (0.05 * sampleRate);
+    juce::AudioBuffer<float> tail (2, totalSamples - skip);
+
+    for (int channel = 0; channel < 2; ++channel)
+        tail.copyFrom (channel, 0, buffer, channel, skip, totalSamples - skip);
+
+    // Delta semantics (near-silence for an unlimited signal), not a
+    // trimmed copy of the programme.
+    const auto residualRmsDb = juce::Decibels::gainToDecibels (static_cast<float> (TestHelpers::rms (tail)), -200.0f);
+    CAPTURE (residualRmsDb);
+    CHECK (residualRmsDb <= -100.0f);
+}
