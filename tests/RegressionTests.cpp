@@ -449,15 +449,13 @@ namespace GoldenFixtures
     // Base-rate output alignment between a fixture (rendered by the v0.2.0
     // engine) and the current engine. v0.2.0 had no true-peak-guard delay
     // line; the v0.4.0 engine inserts a constant per-rate-policy-tier guard
-    // delay (brief section 3.2's table: +6 base samples below 176.4 kHz).
-    // The dither fixture is exempt by construction (silence in, dither
-    // noise injected at the very end of the chain, after the delay).
-    //
-    // NOTE (commit 1): still 0 - the guard delay line does not exist yet.
-    // The F2 commit updates this to the engine's per-rate constant.
+    // delay (brief section 3.2's table: +6 base samples below 176.4 kHz) -
+    // a pure integer delay, NOT an audio-content change, compensated here
+    // exactly. The dither fixture is exempt by construction (silence in,
+    // dither noise injected at the very end of the chain, after the delay).
     inline int fixtureAlignmentSamples()
     {
-        return 0;
+        return TruePeakInterpolator::guardDelaySamplesForSampleRate (fixtureSampleRate);
     }
 }
 
@@ -588,5 +586,33 @@ TEST_CASE ("T1: current engine output at v0.2.0-equivalent settings matches the 
         CAPTURE (alignment, firstMismatchChannel, firstMismatchSample, worstAbsoluteDifference,
                  GoldenFixtures::onGenerationPlatform);
         CHECK (mismatches == 0);
+    }
+}
+
+TEST_CASE ("T1: the guard delay is the per-rate-policy constant - 6 base samples below 176.4 kHz, 0 above - never fs-scaled",
+           "[regression][golden][latency]")
+{
+    // Brief section 3.2's binding table: the BS.1770-4 bank's group delay
+    // is (48-1)/(2*4) = 5.875 BASE-RATE samples wherever it runs - the 2x
+    // tier (88.2-96 kHz) reuses the same bank (phases 0/2), so the constant
+    // is identical there, and the >= 176.4 kHz tier is a zero-delay
+    // pass-through.
+    struct RateExpectation { double sampleRate; int expectedGuardDelay; };
+
+    for (const auto& expectation : { RateExpectation { 44100.0, 6 },
+                                     RateExpectation { 48000.0, 6 },
+                                     RateExpectation { 96000.0, 6 },
+                                     RateExpectation { 192000.0, 0 } })
+    {
+        CAPTURE (expectation.sampleRate);
+
+        CHECK (TruePeakInterpolator::guardDelaySamplesForSampleRate (expectation.sampleRate)
+               == expectation.expectedGuardDelay);
+
+        TruePeakLimiterEngine engine;
+        juce::dsp::ProcessSpec spec { expectation.sampleRate, 512, 2 };
+        engine.prepare (spec);
+
+        CHECK (engine.getTpGuardDelaySamples() == expectation.expectedGuardDelay);
     }
 }

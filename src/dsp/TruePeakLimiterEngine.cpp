@@ -68,7 +68,17 @@ void TruePeakLimiterEngine::prepare (const juce::dsp::ProcessSpec& spec)
     lookaheadSamplesBase = juce::jmax (0, juce::roundToInt (lastLookaheadMs * 0.001 * sampleRate));
     lookaheadSamplesOS = lookaheadSamplesBase * oversamplingFactor;
 
-    totalLatencySamples = lookaheadSamplesBase + detectionLatencySamplesBase;
+    // F2 (v0.4.0): the true-peak-guard alignment delay is a constant per
+    // rate-policy tier (+6 base samples below 176.4 kHz, +0 at/above - see
+    // TruePeakInterpolator) and is ALWAYS part of the path and the
+    // reported latency, whether or not tpGuard is engaged.
+    guardDelaySamples = TruePeakInterpolator::guardDelaySamplesForSampleRate (sampleRate);
+    guardDetector.prepare (sampleRate);
+    meterDetector.prepare (sampleRate);
+    guardReleaseCoeff = std::exp (-1.0 / (0.005 * sampleRate)); // 5 ms release
+    guardWasEnabled = false;
+
+    totalLatencySamples = lookaheadSamplesBase + detectionLatencySamplesBase + guardDelaySamples;
 
     // The sliding-window-minimum's window covers "now" plus every future
     // oversampled sample up to lookaheadSamplesOS ahead, so its size is
@@ -167,6 +177,19 @@ void TruePeakLimiterEngine::reset()
 
     autoReleaseDepthAvgDb = 0.0;
 
+    guardDetector.reset();
+    meterDetector.reset();
+    guardDelayWritePos = 0;
+    guardWasEnabled = false;
+
+    for (int channel = 0; channel < maxChannels; ++channel)
+    {
+        guardGainState[channel] = 1.0;
+
+        for (auto& sample : guardDelayRing[channel])
+            sample = 0.0f;
+    }
+
     for (auto& filter : kWeightShelf)
         filter.reset();
 
@@ -183,6 +206,8 @@ void TruePeakLimiterEngine::reset()
     momentaryLufsAtomic.store (-100.0f, std::memory_order_relaxed);
     shortTermLufsAtomic.store (-100.0f, std::memory_order_relaxed);
     integratedLufsAtomic.store (-100.0f, std::memory_order_relaxed);
+    truePeakMaxHoldDbAtomic.store (-100.0f, std::memory_order_relaxed);
+    maxGainReductionDbAtomic.store (0.0f, std::memory_order_relaxed);
 }
 
 void TruePeakLimiterEngine::setInputGainDb (float newInputGainDb)
@@ -605,8 +630,15 @@ void TruePeakLimiterEngine::processChunk (juce::dsp::AudioBlock<float>& block)
 
             // Final safety backstop: the never-exceed-ceiling guarantee does
             // not rely solely on the smoothed gain envelope (or the clip-mix
-            // blend) above - this clamp is unconditional.
+            // blend) above - this clamp is unconditional (in the Tests
+            // binary only, T2's zero-overshoot property test may bypass it
+            // to prove the FIR-smoothed envelope needs no clamp).
+#if APOTHEOSIS_TESTING
+            if (! bypassCeilingClampForTests)
+                outSample = juce::jlimit (-ceilingLinear, ceilingLinear, outSample);
+#else
             outSample = juce::jlimit (-ceilingLinear, ceilingLinear, outSample);
+#endif
             channelData[i] = outSample;
 
             blockPeakLinear = juce::jmax (blockPeakLinear, std::abs (outSample));
@@ -616,10 +648,100 @@ void TruePeakLimiterEngine::processChunk (juce::dsp::AudioBlock<float>& block)
         ++slidingSampleCounter;
     }
 
+#if APOTHEOSIS_TESTING
+    // T2 support: the oversampled-domain post-gain peak of this chunk,
+    // BEFORE downsampling - the domain the zero-overshoot proof obligation
+    // is stated in (brief section 3.1).
+    lastOsDomainPeakForTests = juce::jmax (lastOsDomainPeakForTests, blockPeakLinear);
+#endif
+
     oversampler->processSamplesDown (block);
 
-    gainReductionDbAtomic.store (juce::Decibels::gainToDecibels (blockMinGain, -100.0f), std::memory_order_relaxed);
-    outputTruePeakDbAtomic.store (juce::Decibels::gainToDecibels (blockPeakLinear, -100.0f), std::memory_order_relaxed);
+    //==================================================================
+    // F2 (v0.4.0): true-peak-guard alignment delay + optional correction.
+    // The per-rate constant delay (see prepare()) is ALWAYS in the path -
+    // a pure integer delay when the guard is Off - so toggling/automating
+    // tpGuard can never change the reported latency. When On, a
+    // BS.1770-4-compliant 4x detector runs on the pre-delay output; while
+    // its measured true peak exceeds the (nominal, user-facing) Ceiling
+    // the delayed output is ducked by exactly the excess - instantaneous
+    // attack via min(), 5 ms exponential release toward unity, only for
+    // the duration of the over. The detector's group delay (5.875 base
+    // samples) is what the 6-sample alignment delay compensates: the
+    // correction gain computed from the detector's reading of the peak
+    // region multiplies the delayed samples of that same region.
+    //==================================================================
+    {
+        const auto guardOn = tpGuardEnabled;
+
+        if (guardOn && ! guardWasEnabled)
+        {
+            // Rising edge (block boundary): fresh detector state, unity
+            // gain - the delay ring itself is always kept warm below.
+            guardDetector.reset();
+
+            for (auto& gainState : guardGainState)
+                gainState = 1.0;
+        }
+
+        guardWasEnabled = guardOn;
+
+        if (guardDelaySamples > 0 || guardOn)
+        {
+            for (size_t i = 0; i < numSamples; ++i)
+            {
+                for (size_t channel = 0; channel < numChannels; ++channel)
+                {
+                    const auto ch = static_cast<int> (channel);
+                    auto* data = block.getChannelPointer (channel);
+                    const auto incoming = data[i];
+
+                    auto outputSample = incoming;
+
+                    if (guardDelaySamples > 0)
+                    {
+                        const auto readPos = (guardDelayWritePos - guardDelaySamples + guardDelayCapacity) % guardDelayCapacity;
+                        outputSample = guardDelayRing[ch][readPos];
+                        guardDelayRing[ch][guardDelayWritePos] = incoming;
+                    }
+
+                    if (guardOn)
+                    {
+                        const auto measuredTruePeak = guardDetector.processSample (ch, incoming);
+                        auto& guardGain = guardGainState[ch];
+
+                        // 5 ms release toward unity...
+                        guardGain = 1.0 + (guardGain - 1.0) * guardReleaseCoeff;
+
+                        // ...then instantaneous attack to exactly the
+                        // measured excess (never deeper).
+                        if (measuredTruePeak > ceilingLinear)
+                            guardGain = juce::jmin (guardGain,
+                                                    static_cast<double> (ceilingLinear) / static_cast<double> (measuredTruePeak));
+
+                        outputSample = static_cast<float> (static_cast<double> (outputSample) * guardGain);
+                    }
+
+                    data[i] = outputSample;
+                }
+
+                if (guardDelaySamples > 0)
+                    guardDelayWritePos = (guardDelayWritePos + 1) % guardDelayCapacity;
+
+                if (guardOn)
+                    guardDetector.advanceWritePosition();
+            }
+        }
+    }
+
+    const auto gainReductionDb = juce::Decibels::gainToDecibels (blockMinGain, -100.0f);
+    gainReductionDbAtomic.store (gainReductionDb, std::memory_order_relaxed);
+
+    // Max-GR hold (v0.4.0 metering pack): the most negative (deepest)
+    // reduction seen since the last reset - relaxed load/store is fine,
+    // this atomic is only ever written from the audio thread.
+    if (gainReductionDb < maxGainReductionDbAtomic.load (std::memory_order_relaxed))
+        maxGainReductionDbAtomic.store (gainReductionDb, std::memory_order_relaxed);
 
     // Auto Release (v0.2.0): update the slow-moving gain-reduction-depth
     // average for the NEXT chunk, from THIS chunk's own measured depth
@@ -741,5 +863,34 @@ void TruePeakLimiterEngine::processChunk (juce::dsp::AudioBlock<float>& block)
                 data[sample] = juce::jlimit (-ceilingLinear, ceilingLinear, dithered);
             }
         }
+    }
+
+    //==================================================================
+    // F2 (v0.4.0): reported dBTP is a spec-shaped BS.1770-4 4x-interpolated
+    // measurement of the FINAL base-rate output (post guard, post dither) -
+    // i.e. what a compliant external meter will read - replacing v0.2.0's
+    // abs-peak-in-the-oversampled-domain readout. Metering only, no audio
+    // impact.
+    //==================================================================
+    {
+        float blockTruePeakLinear = 0.0f;
+
+        for (size_t i = 0; i < numSamples; ++i)
+        {
+            for (size_t channel = 0; channel < numChannels; ++channel)
+            {
+                const auto ch = static_cast<int> (channel);
+                const auto* data = block.getChannelPointer (channel);
+                blockTruePeakLinear = juce::jmax (blockTruePeakLinear, meterDetector.processSample (ch, data[i]));
+            }
+
+            meterDetector.advanceWritePosition();
+        }
+
+        const auto truePeakDb = juce::Decibels::gainToDecibels (blockTruePeakLinear, -100.0f);
+        outputTruePeakDbAtomic.store (truePeakDb, std::memory_order_relaxed);
+
+        if (truePeakDb > truePeakMaxHoldDbAtomic.load (std::memory_order_relaxed))
+            truePeakMaxHoldDbAtomic.store (truePeakDb, std::memory_order_relaxed);
     }
 }

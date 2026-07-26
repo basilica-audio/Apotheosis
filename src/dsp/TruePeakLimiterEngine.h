@@ -1,5 +1,7 @@
 #pragma once
 
+#include "TruePeakInterpolator.h"
+
 #include <juce_dsp/juce_dsp.h>
 
 #include <atomic>
@@ -191,10 +193,27 @@ public:
 
     // Total reported latency in samples, valid after prepare() has run:
     // Lookahead (converted to samples at the prepared sample rate) plus the
-    // 4x oversampler's own round-trip latency.
+    // oversampler's own round-trip latency plus the per-rate true-peak-guard
+    // alignment delay (v0.4.0 - a CONSTANT per rate-policy tier: +6 base
+    // samples below 176.4 kHz, +0 at/above; see TruePeakInterpolator).
     int getLatencySamples() const noexcept { return totalLatencySamples; }
 
+    // The true-peak-guard alignment delay portion of getLatencySamples(),
+    // valid after prepare(). Always in the signal path (a pure integer
+    // delay when the guard is Off) so that automating tpGuard can never
+    // change the reported latency - see ParameterIds.h::tpGuard.
+    int getTpGuardDelaySamples() const noexcept { return guardDelaySamples; }
+
 #if APOTHEOSIS_TESTING
+    // Test-only hooks for the T2 zero-overshoot property test (brief
+    // section 6): bypassing the final ceiling clamp proves the FIR-smoothed
+    // envelope alone never overshoots (the mathematical guarantee, not the
+    // clamp, is what T2 asserts), and lastOsDomainPeakForTests exposes the
+    // oversampled-domain post-gain peak the proof is stated in. Compiled
+    // into the Tests binary only.
+    bool bypassCeilingClampForTests = false;
+    float lastOsDomainPeakForTests = 0.0f;
+
     // Test-only determinism hook, compiled into the Tests binary only
     // (APOTHEOSIS_TESTING is defined solely on the Tests target - see
     // CMakeLists.txt). The dither RNG is deliberately unseeded-from-outside
@@ -214,6 +233,17 @@ public:
     float getMomentaryLufs() const noexcept { return momentaryLufsAtomic.load (std::memory_order_relaxed); }
     float getShortTermLufs() const noexcept { return shortTermLufsAtomic.load (std::memory_order_relaxed); }
     float getIntegratedLufs() const noexcept { return integratedLufsAtomic.load (std::memory_order_relaxed); }
+
+    // v0.4.0 metering additions. The true-peak readout (and its max hold)
+    // is now a spec-shaped BS.1770-4 4x-interpolated measurement of the
+    // final base-rate output - i.e. what a compliant external meter will
+    // read - replacing v0.2.0's abs-peak-in-the-oversampled-domain readout
+    // (metering-only change, no audio impact). Both max holds are
+    // resettable from the UI/message thread.
+    float getTruePeakMaxHoldDb() const noexcept { return truePeakMaxHoldDbAtomic.load (std::memory_order_relaxed); }
+    void resetTruePeakMaxHold() noexcept { truePeakMaxHoldDbAtomic.store (-100.0f, std::memory_order_relaxed); }
+    float getMaxGainReductionDb() const noexcept { return maxGainReductionDbAtomic.load (std::memory_order_relaxed); }
+    void resetMaxGainReduction() noexcept { maxGainReductionDbAtomic.store (0.0f, std::memory_order_relaxed); }
 
 private:
     static constexpr int oversamplingFactorPow2 = 2; // 2^2 = 4x oversampling
@@ -411,6 +441,35 @@ private:
     bool unityGainMonitorEnabled = false;
 
     //==================================================================
+    // F2 (v0.4.0): true-peak guard + measured true-peak metering.
+    //==================================================================
+
+    // Detector feeding the tpGuard correction (runs on the pre-delay
+    // output) and the one feeding the reported dBTP metering (runs on the
+    // final output, after dither) - two independent instances because they
+    // observe different points of the chain.
+    TruePeakInterpolator guardDetector;
+    TruePeakInterpolator meterDetector;
+
+    // The always-in-path alignment delay (base rate). Constant per
+    // rate-policy tier - see TruePeakInterpolator::
+    // guardDelaySamplesForSampleRate() - so capacity 8 covers the maximum
+    // (6) with ring-arithmetic headroom.
+    static constexpr int guardDelayCapacity = 8;
+    int guardDelaySamples = 0;
+    float guardDelayRing[maxChannels][guardDelayCapacity] = {};
+    int guardDelayWritePos = 0;
+
+    // Guard correction state: per-channel micro-duck gain (1 = no
+    // correction), instantaneous attack (a min() against the exact excess),
+    // 5 ms exponential release toward unity - Oxford AUTO COMP lineage,
+    // "by the minimum amount required, and only for the duration of the
+    // error".
+    double guardGainState[maxChannels] = { 1.0, 1.0 };
+    double guardReleaseCoeff = 0.0;
+    bool guardWasEnabled = false;
+
+    //==================================================================
     // Metering state (published via atomics - see the public getters).
     //==================================================================
     std::atomic<float> gainReductionDbAtomic { 0.0f };
@@ -418,6 +477,8 @@ private:
     std::atomic<float> momentaryLufsAtomic { -100.0f };
     std::atomic<float> shortTermLufsAtomic { -100.0f };
     std::atomic<float> integratedLufsAtomic { -100.0f };
+    std::atomic<float> truePeakMaxHoldDbAtomic { -100.0f };
+    std::atomic<float> maxGainReductionDbAtomic { 0.0f };
 
     // ITU-R BS.1770-4 K-weighting pre-filter: stage 1 (high shelf) then
     // stage 2 (high pass), applied per channel at the BASE sample rate
