@@ -247,8 +247,15 @@ public:
     void resetMaxGainReduction() noexcept { maxGainReductionDbAtomic.store (0.0f, std::memory_order_relaxed); }
 
 private:
-    static constexpr int oversamplingFactorPow2 = 2; // 2^2 = 4x oversampling
-    static constexpr int oversamplingFactor = 1 << oversamplingFactorPow2;
+    // v0.4.0 (F3): the oversampling factor is prepare-latched runtime
+    // state - 2^2 = 4x (the v0.2.0 chain, default) up to 2^4 = 16x -
+    // derived in prepare() from lastOversamplingChoiceIndex with the
+    // high-base-rate derating cap (8x max at >= 96 kHz, 4x max at
+    // >= 176.4 kHz; the parameter keeps its stored value, the engine
+    // clamps internally).
+    int oversamplingFactorPow2 = 2;
+    int oversamplingFactor = 1 << 2;
+
     static constexpr double smoothingTimeSeconds = 0.05;
 
     // Extra internal headroom subtracted (in dB) from the user-facing

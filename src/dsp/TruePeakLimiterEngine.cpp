@@ -67,16 +67,82 @@ void TruePeakLimiterEngine::prepare (const juce::dsp::ProcessSpec& spec)
     inputGain.prepare (spec);
     inputGain.setGainDecibels (lastInputGainDb);
 
-    // 4x oversampling (2^2), half-band polyphase IIR: lower latency than
-    // the equiripple FIR alternative for a given stopband quality.
-    // useIntegerLatency=true so getLatencyInSamples() (and therefore the
-    // reported plugin latency) is an exact integer sample count.
-    oversampler = std::make_unique<juce::dsp::Oversampling<float>> (
-        spec.numChannels,
-        oversamplingFactorPow2,
-        juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR,
-        true,
-        true);
+    // F3 (v0.4.0): effective oversampling factor = the prepare-latched
+    // choice (4x/8x/16x), capped at high base rates (ROS section 4: no
+    // pointless 16x at 192 kHz) - 8x max at >= 96 kHz, 4x max at
+    // >= 176.4 kHz. The parameter keeps its stored value; only the
+    // engine's effective factor clamps.
+    {
+        const auto requestedPow2 = 2 + juce::jlimit (0, 2, lastOversamplingChoiceIndex);
+        auto maxPow2 = 4;
+
+        if (sampleRate >= 176400.0)
+            maxPow2 = 2;
+        else if (sampleRate >= 96000.0)
+            maxPow2 = 3;
+
+        oversamplingFactorPow2 = juce::jmin (requestedPow2, maxPow2);
+        oversamplingFactor = 1 << oversamplingFactorPow2;
+    }
+
+    // useIntegerLatency=true in every configuration so
+    // getLatencyInSamples() (and therefore the reported plugin latency) is
+    // an exact integer sample count.
+    //
+    // BINDING asymmetry (brief section 3.3, documented in
+    // docs/architecture.md): the default 4x Minimum-Phase chain uses the
+    // STOCK JUCE stage specs - the literal v0.2.0 construction, bit-exact
+    // against the golden fixtures. Every other combination (8x/16x, or
+    // Linear Phase at any factor) uses custom decimator-weighted stage
+    // specs instead, fixing JUCE's inverted attenuation priorities:
+    // audible alias quality lives in the DECIMATOR (Kahles/Esqueda/
+    // Valimaki, JAES 2019), so stage 0 spends -106 dB on the way down
+    // (vs stock max-quality's -75 dB) and relaxes 10 dB per later stage
+    // (floor -60 dB) while the transition band widens geometrically up
+    // the cascade (TBW[k] = (TBW[k-1] + 0.5) / 2).
+    const auto filterType = lastOsPhaseIndex == 1
+                                 ? juce::dsp::Oversampling<float>::filterHalfBandFIREquiripple
+                                 : juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR;
+    const auto useStockChain = oversamplingFactorPow2 == 2 && lastOsPhaseIndex == 0;
+
+    if (useStockChain)
+    {
+        // 4x oversampling (2^2), half-band polyphase IIR: the exact
+        // v0.2.0 construction (lower latency than the equiripple FIR
+        // alternative for a given stopband quality).
+        oversampler = std::make_unique<juce::dsp::Oversampling<float>> (
+            spec.numChannels,
+            oversamplingFactorPow2,
+            juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR,
+            true,
+            true);
+    }
+    else
+    {
+        oversampler = std::make_unique<juce::dsp::Oversampling<float>> (
+            spec.numChannels,
+            static_cast<size_t> (oversamplingFactorPow2),
+            filterType,
+            true,
+            true);
+
+        oversampler->clearOversamplingStages();
+
+        auto transitionWidth = 0.06f;
+
+        for (int stage = 0; stage < oversamplingFactorPow2; ++stage)
+        {
+            const auto attenuationUpDb = static_cast<float> (juce::jmax (60, 86 - 10 * stage));
+            const auto attenuationDownDb = static_cast<float> (juce::jmax (60, 106 - 10 * stage));
+
+            oversampler->addOversamplingStage (filterType,
+                                               transitionWidth, -attenuationUpDb,
+                                               transitionWidth, -attenuationDownDb);
+
+            transitionWidth = (transitionWidth + 0.5f) / 2.0f;
+        }
+    }
+
     oversampler->initProcessing (static_cast<size_t> (spec.maximumBlockSize));
 
     // Never 0, so process()'s chunking loop below can't divide the block
