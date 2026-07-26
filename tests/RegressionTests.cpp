@@ -438,13 +438,28 @@ namespace GoldenFixtures
 
     // Generation platform pin (see the file-level comment above): fixtures
     // were generated on macOS arm64, where float renders are reproducible
-    // bit-for-bit; elsewhere the comparison tolerates cross-compiler float
-    // drift up to 1e-7 absolute.
+    // bit-for-bit. That platform keeps the strict bit-identity gate.
 #if JUCE_MAC && JUCE_ARM
     constexpr bool onGenerationPlatform = true;
 #else
     constexpr bool onGenerationPlatform = false;
 #endif
+
+    // Off the generation platform the comparison is a drift bound, not a
+    // bit-identity check. The bound cannot be sub-ULP: one float ULP at
+    // amplitude 1.0 is already 1.19e-7, and these fixtures run full-scale
+    // signals through an oversampled FIR bank plus the limiter, so MSVC's
+    // contraction/vectorisation choices legitimately accumulate a few ULP
+    // against Clang's. (Measured worst case on the windows-latest runner:
+    // 7.7e-7.)
+    //
+    // 1e-5 absolute is ~-100 dBFS - two orders of magnitude below anything
+    // audible, and still three to four orders below what an actual DSP
+    // regression produces: a wrong filter coefficient, a missed guard-delay
+    // sample or a gain-staging slip all move the output by 1e-2..1e0 here,
+    // so this bound keeps its regression-catching power off-platform while
+    // no longer failing on arithmetic that is merely rounded differently.
+    constexpr double offPlatformAbsoluteTolerance = 1.0e-5;
 
     // Base-rate output alignment between a fixture (rendered by the v0.2.0
     // engine) and the current engine. v0.2.0 had no true-peak-guard delay
@@ -566,8 +581,9 @@ TEST_CASE ("T1: current engine output at v0.2.0-equivalent settings matches the 
                 const auto actual = rendered.getSample (channel, sample + alignment);
                 const auto difference = std::abs (static_cast<double> (actual) - static_cast<double> (expected));
 
-                const auto matches = GoldenFixtures::onGenerationPlatform ? (actual == expected)
-                                                                          : (difference <= 1.0e-7);
+                const auto matches = GoldenFixtures::onGenerationPlatform
+                                         ? (actual == expected)
+                                         : (difference <= GoldenFixtures::offPlatformAbsoluteTolerance);
 
                 if (! matches)
                 {

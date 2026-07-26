@@ -484,6 +484,24 @@ TEST_CASE ("T12: Legacy 16-bit dither with the noiseShaping parameter present st
 
     const auto* fixtureData = static_cast<const float*> (fixtureBytes.getData());
     juce::int64 mismatches = 0;
+    double worstAbsoluteDifference = 0.0;
+
+    // Off the generation platform this cannot be a near-equality check.
+    // The signal under test is a 16-bit REQUANTISER's output, so its values
+    // live on a lattice whose step is 2^-15 (3.05e-5). Whenever a compiler's
+    // float rounding moves a pre-quantisation sample across a decision
+    // boundary - and dither exists precisely to scatter samples onto those
+    // boundaries - the output moves by one whole step. A sub-LSB tolerance
+    // is therefore unsatisfiable by construction, not evidence of a defect.
+    //
+    // So off-platform the invariant is: every sample agrees with the fixture
+    // to within one quantiser step. That still fails loudly on a real dither
+    // regression (a broken requantiser, a wrong seed or a dead noise source
+    // moves samples by many steps, or off the lattice entirely), and the
+    // exact-bit guarantee is retained on the generation platform below.
+#if ! (JUCE_MAC && defined (__aarch64__))
+    constexpr double sixteenBitStep = 1.0 / 32768.0;
+#endif
 
     for (int channel = 0; channel < 2; ++channel)
     {
@@ -498,12 +516,20 @@ TEST_CASE ("T12: Legacy 16-bit dither with the noiseShaping parameter present st
             if (std::memcmp (&rendered[n], &reference[n], sizeof (float)) != 0)
                 ++mismatches;
 #else
-            if (std::abs (rendered[n] - reference[n]) > 1.0e-7f)
+            const auto difference = std::abs (static_cast<double> (rendered[n])
+                                              - static_cast<double> (reference[n]));
+            worstAbsoluteDifference = juce::jmax (worstAbsoluteDifference, difference);
+
+            // 1.5 steps, not 1.0: the comparison is between two floats that
+            // are each already a rounded representation of a lattice point,
+            // so an exact one-step move can measure a hair over one step.
+            if (difference > 1.5 * sixteenBitStep)
                 ++mismatches;
 #endif
         }
     }
 
+    CAPTURE (worstAbsoluteDifference);
     CHECK (mismatches == 0);
 }
 
