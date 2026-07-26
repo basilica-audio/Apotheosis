@@ -32,9 +32,15 @@ views. Wiring them into the photoreal editor is a separate GUI PR.
     minimum. Asserted with the safety clamp *bypassed* over 10 000
     randomised signals x 4 styles x 3 lookahead settings, so the test proves
     the algorithm rather than the clamp.
-  - This is what removes low-frequency intermodulation distortion: 50 Hz
-    driven 3 dB over the ceiling at 10 ms lookahead measures under 1 % THD in
-    Transparent, and Classic on identical input is asserted at 3x or more.
+  - Low-frequency behaviour, measured: 50 Hz driven 3 dB over the ceiling at
+    10 ms lookahead measures well under the 1 % THD bound in Transparent
+    (~1.7e-8). **Classic measures identically clean at that setting** - this
+    engine's sliding-minimum window has always been lookahead-sized, so at
+    10 ms it already bridges the 50 Hz half-period. The distortion the
+    smoother addresses is therefore a narrower win than a Classic-vs-styles
+    THD gap would suggest; what the test does establish is that the window is
+    what does the work (shrink the lookahead to 3 ms and the same Transparent
+    render distorts to 5.5 %).
   - Classic is the **literal v0.2.0 code path** behind a top-level dispatch,
     not a conditional threaded through it.
   - In non-Classic styles, **Attack** gains a second meaning: it sets the
