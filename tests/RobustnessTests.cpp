@@ -82,13 +82,36 @@ namespace
 
         void* memory = nullptr;
 
-        // posix_memalign requires a power-of-two multiple of sizeof(void*);
-        // C++17's aligned new already guarantees a power of two, so only the
-        // lower bound needs raising.
-        if (::posix_memalign (&memory, std::max (alignment, sizeof (void*)), size != 0 ? size : 1) != 0)
+        // Both back ends want a power-of-two alignment that is at least
+        // sizeof(void*); C++17's aligned new already guarantees a power of
+        // two, so only the lower bound needs raising.
+        const auto effectiveAlignment = std::max (alignment, sizeof (void*));
+        const auto effectiveSize = size != 0 ? size : 1;
+
+       #if defined (_WIN32)
+        // MSVC has no posix_memalign/aligned_alloc; _aligned_malloc is the
+        // equivalent and returns nullptr rather than an errno on failure.
+        // Its blocks must be released with _aligned_free, which is what the
+        // aligned operator delete replacements below do.
+        memory = ::_aligned_malloc (effectiveSize, effectiveAlignment);
+
+        if (memory == nullptr)
             throw std::bad_alloc();
+       #else
+        if (::posix_memalign (&memory, effectiveAlignment, effectiveSize) != 0)
+            throw std::bad_alloc();
+       #endif
 
         return memory;
+    }
+
+    void guardedFreeAligned (void* memory) noexcept
+    {
+       #if defined (_WIN32)
+        ::_aligned_free (memory);
+       #else
+        std::free (memory);
+       #endif
     }
 }
 
@@ -109,10 +132,10 @@ void operator delete (void* memory) noexcept { std::free (memory); }
 void operator delete[] (void* memory) noexcept { std::free (memory); }
 void operator delete (void* memory, std::size_t) noexcept { std::free (memory); }
 void operator delete[] (void* memory, std::size_t) noexcept { std::free (memory); }
-void operator delete (void* memory, std::align_val_t) noexcept { std::free (memory); }
-void operator delete[] (void* memory, std::align_val_t) noexcept { std::free (memory); }
-void operator delete (void* memory, std::size_t, std::align_val_t) noexcept { std::free (memory); }
-void operator delete[] (void* memory, std::size_t, std::align_val_t) noexcept { std::free (memory); }
+void operator delete (void* memory, std::align_val_t) noexcept { guardedFreeAligned (memory); }
+void operator delete[] (void* memory, std::align_val_t) noexcept { guardedFreeAligned (memory); }
+void operator delete (void* memory, std::size_t, std::align_val_t) noexcept { guardedFreeAligned (memory); }
+void operator delete[] (void* memory, std::size_t, std::align_val_t) noexcept { guardedFreeAligned (memory); }
 
 TEST_CASE ("Silence produces silence (and no NaN/Inf)", "[robustness]")
 {
