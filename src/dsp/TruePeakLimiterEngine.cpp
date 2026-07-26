@@ -105,28 +105,32 @@ void TruePeakLimiterEngine::prepare (const juce::dsp::ProcessSpec& spec)
                                  : juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR;
     const auto useStockChain = oversamplingFactorPow2 == 2 && lastOsPhaseIndex == 0;
 
-    if (useStockChain)
+    // Built twice with identical specs: once for the wet path and once for
+    // F6's dry Delta reference (see the header's dryOversampler docs -
+    // filter-identical paths are what make the delta subtraction null).
+    const auto buildOversampler = [&]() -> std::unique_ptr<juce::dsp::Oversampling<float>>
     {
-        // 4x oversampling (2^2), half-band polyphase IIR: the exact
-        // v0.2.0 construction (lower latency than the equiripple FIR
-        // alternative for a given stopband quality).
-        oversampler = std::make_unique<juce::dsp::Oversampling<float>> (
-            spec.numChannels,
-            oversamplingFactorPow2,
-            juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR,
-            true,
-            true);
-    }
-    else
-    {
-        oversampler = std::make_unique<juce::dsp::Oversampling<float>> (
+        if (useStockChain)
+        {
+            // 4x oversampling (2^2), half-band polyphase IIR: the exact
+            // v0.2.0 construction (lower latency than the equiripple FIR
+            // alternative for a given stopband quality).
+            return std::make_unique<juce::dsp::Oversampling<float>> (
+                spec.numChannels,
+                oversamplingFactorPow2,
+                juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR,
+                true,
+                true);
+        }
+
+        auto built = std::make_unique<juce::dsp::Oversampling<float>> (
             spec.numChannels,
             static_cast<size_t> (oversamplingFactorPow2),
             filterType,
             true,
             true);
 
-        oversampler->clearOversamplingStages();
+        built->clearOversamplingStages();
 
         auto transitionWidth = 0.06f;
 
@@ -135,15 +139,21 @@ void TruePeakLimiterEngine::prepare (const juce::dsp::ProcessSpec& spec)
             const auto attenuationUpDb = static_cast<float> (juce::jmax (60, 86 - 10 * stage));
             const auto attenuationDownDb = static_cast<float> (juce::jmax (60, 106 - 10 * stage));
 
-            oversampler->addOversamplingStage (filterType,
-                                               transitionWidth, -attenuationUpDb,
-                                               transitionWidth, -attenuationDownDb);
+            built->addOversamplingStage (filterType,
+                                         transitionWidth, -attenuationUpDb,
+                                         transitionWidth, -attenuationDownDb);
 
             transitionWidth = (transitionWidth + 0.5f) / 2.0f;
         }
-    }
 
+        return built;
+    };
+
+    oversampler = buildOversampler();
     oversampler->initProcessing (static_cast<size_t> (spec.maximumBlockSize));
+
+    dryOversampler = buildOversampler();
+    dryOversampler->initProcessing (static_cast<size_t> (spec.maximumBlockSize));
 
     // Never 0, so process()'s chunking loop below can't divide the block
     // into zero-sized (i.e. infinite) chunks - see issue #14.
@@ -166,6 +176,13 @@ void TruePeakLimiterEngine::prepare (const juce::dsp::ProcessSpec& spec)
     meterDetector.prepare (sampleRate);
     guardReleaseCoeff = std::exp (-1.0 / (0.005 * sampleRate)); // 5 ms release
     guardWasEnabled = false;
+
+    // F6 (v0.4.0): dry Delta reference scratch (base rate) + the 10 ms
+    // output crossfade step + the Unity Gain monitor trim smoother.
+    dryBaseScratch.setSize (maxChannels, static_cast<int> (juce::jmax (static_cast<juce::uint32> (1),
+                                                                       spec.maximumBlockSize)));
+    deltaMixStepPerSample = static_cast<float> (1.0 / juce::jmax (1.0, 0.010 * sampleRate));
+    monitorTrimSmoothed.reset (sampleRate, smoothingTimeSeconds);
 
     // F1/F7 (v0.4.0): smoother capacity covers the full lookahead window
     // (the largest span any style/attack combination can request); the
@@ -334,6 +351,24 @@ void TruePeakLimiterEngine::reset()
     meterDetector.reset();
     guardDelayWritePos = 0;
     guardWasEnabled = false;
+
+    // F6: dry Delta reference state - the crossfade snaps to its target
+    // (reset() is not an audible transition) and the trim smoother
+    // re-seeds at whatever target the current parameter state implies.
+    if (dryOversampler != nullptr)
+        dryOversampler->reset();
+
+    for (auto& channelRing : dryGuardDelayRing)
+        for (auto& sample : channelRing)
+            sample = 0.0f;
+
+    dryPathWasActive = false;
+    deltaMixCurrent = deltaListenEnabled ? 1.0f : 0.0f;
+
+    const auto trimTarget = (unityGainMonitorEnabled && ! deltaListenEnabled)
+                                 ? juce::Decibels::decibelsToGain (-lastInputGainDb)
+                                 : 1.0f;
+    monitorTrimSmoothed.setCurrentAndTargetValue (trimTarget);
 
     for (int channel = 0; channel < maxChannels; ++channel)
     {
@@ -712,6 +747,32 @@ void TruePeakLimiterEngine::processChunk (juce::dsp::AudioBlock<float>& block)
         }
     }
 
+    //==================================================================
+    // F6 (v0.4.0): Delta listen. Active while engaged OR while the 10 ms
+    // output crossfade is still settling; completely inert (zero extra
+    // work, bit-identical output) otherwise. The dry reference runs
+    // through a filter-identical second oversampler whose up-sampled
+    // content is replaced below with the SAME lookahead-delayed samples
+    // the wet gain stage multiplies - see the header's dryOversampler
+    // docs.
+    //==================================================================
+    const auto deltaTarget = deltaListenEnabled;
+    const auto deltaActive = deltaTarget || deltaMixCurrent > 0.0f;
+    float* dryOsData[maxChannels] = { nullptr, nullptr };
+
+    if (deltaActive)
+    {
+        if (! dryPathWasActive)
+            dryOversampler->reset(); // rising edge: drop stale filter state
+
+        auto dryOsBlock = dryOversampler->processSamplesUp (block);
+
+        for (size_t channel = 0; channel < juce::jmin (numChannels, static_cast<size_t> (maxChannels)); ++channel)
+            dryOsData[channel] = dryOsBlock.getChannelPointer (channel);
+    }
+
+    dryPathWasActive = deltaActive;
+
     auto osBlock = oversampler->processSamplesUp (block);
     const auto numOSSamples = osBlock.getNumSamples();
 
@@ -880,6 +941,12 @@ void TruePeakLimiterEngine::processChunk (juce::dsp::AudioBlock<float>& block)
 
             const auto delayed = delayPushAndRead (ch, incoming);
 
+            // F6: the dry Delta reference is exactly this lookahead-
+            // delayed sample - time-aligned with the wet gain multiply
+            // below by construction.
+            if (dryOsData[ch] != nullptr)
+                dryOsData[ch][i] = delayed;
+
             const auto limiterSample = delayed * currentGain[ch];
             auto outSample = limiterSample;
 
@@ -952,6 +1019,15 @@ void TruePeakLimiterEngine::processChunk (juce::dsp::AudioBlock<float>& block)
 
     oversampler->processSamplesDown (block);
 
+    // F6: bring the dry Delta reference back to the base rate through the
+    // filter-identical dry decimator.
+    if (deltaActive)
+    {
+        juce::dsp::AudioBlock<float> dryWhole (dryBaseScratch);
+        auto dryBlock = dryWhole.getSubBlock (0, numSamples).getSubsetChannelBlock (0, numChannels);
+        dryOversampler->processSamplesDown (dryBlock);
+    }
+
     //==================================================================
     // F2 (v0.4.0): true-peak-guard alignment delay + optional correction.
     // The per-rate constant delay (see prepare()) is ALWAYS in the path -
@@ -998,6 +1074,17 @@ void TruePeakLimiterEngine::processChunk (juce::dsp::AudioBlock<float>& block)
                         const auto readPos = (guardDelayWritePos - guardDelaySamples + guardDelayCapacity) % guardDelayCapacity;
                         outputSample = guardDelayRing[ch][readPos];
                         guardDelayRing[ch][guardDelayWritePos] = incoming;
+
+                        // F6: the dry Delta reference passes an identical
+                        // pure delay so wet - dry stays sample-aligned
+                        // (the guard's CORRECTION is wet-only by design).
+                        if (deltaActive)
+                        {
+                            auto* dryData = dryBaseScratch.getWritePointer (ch);
+                            const auto dryIncoming = dryData[i];
+                            dryData[i] = dryGuardDelayRing[ch][readPos];
+                            dryGuardDelayRing[ch][guardDelayWritePos] = dryIncoming;
+                        }
                     }
 
                     if (guardOn)
@@ -1027,6 +1114,63 @@ void TruePeakLimiterEngine::processChunk (juce::dsp::AudioBlock<float>& block)
                     guardDetector.advanceWritePosition();
             }
         }
+    }
+
+    //==================================================================
+    // F6 (v0.4.0): Delta output crossfade - a 10 ms linear ramp between
+    // the normal output and (processed - delayedDry), then the final
+    // safety clamp (Delta is a monitor mode, but the never-exceed-Ceiling
+    // guarantee is unconditional). Inert (never entered) at the default.
+    //==================================================================
+    if (deltaActive)
+    {
+        for (size_t i = 0; i < numSamples; ++i)
+        {
+            deltaMixCurrent = juce::jlimit (0.0f, 1.0f,
+                                            deltaMixCurrent + (deltaTarget ? deltaMixStepPerSample
+                                                                           : -deltaMixStepPerSample));
+
+            for (size_t channel = 0; channel < numChannels; ++channel)
+            {
+                auto* data = block.getChannelPointer (channel);
+                const auto dry = dryBaseScratch.getReadPointer (static_cast<int> (channel))[i];
+                const auto blended = data[i] - deltaMixCurrent * dry;
+                data[i] = juce::jlimit (-ceilingLinear, ceilingLinear, blended);
+            }
+        }
+    }
+
+    //==================================================================
+    // F6 (v0.4.0): Unity Gain monitor trim (-inputGain dB while engaged;
+    // unity when Delta is also on - Delta wins). Smoothed over the same
+    // 50 ms window as every other continuous parameter; the loop is
+    // skipped entirely (bit-identical output) when the trim sits at
+    // exactly unity, i.e. always at the defaults. Runs BEFORE the LUFS/
+    // true-peak metering below so every meter reads the actual output,
+    // and before dither so dither stays last-in-chain at the output word
+    // length. Re-clamped to the ceiling because a negative Input Gain
+    // makes the trim a boost (documented in docs/manual.md).
+    //==================================================================
+    monitorTrimSmoothed.setTargetValue ((unityGainMonitorEnabled && ! deltaListenEnabled)
+                                             ? juce::Decibels::decibelsToGain (-lastInputGainDb)
+                                             : 1.0f);
+
+    if (monitorTrimSmoothed.isSmoothing() || monitorTrimSmoothed.getTargetValue() != 1.0f)
+    {
+        for (size_t i = 0; i < numSamples; ++i)
+        {
+            const auto trim = monitorTrimSmoothed.getNextValue();
+
+            for (size_t channel = 0; channel < numChannels; ++channel)
+            {
+                auto* data = block.getChannelPointer (channel);
+                data[i] = juce::jlimit (-ceilingLinear, ceilingLinear, data[i] * trim);
+            }
+        }
+    }
+    else
+    {
+        monitorTrimSmoothed.skip (static_cast<int> (numSamples));
     }
 
     const auto gainReductionDb = juce::Decibels::gainToDecibels (blockMinGain, -100.0f);
@@ -1136,7 +1280,11 @@ void TruePeakLimiterEngine::processChunk (juce::dsp::AudioBlock<float>& block)
     // branch below is the UNTOUCHED v0.2.0 code - bit-identical,
     // including the shared-RNG draw order (T12's golden-fixture case).
     // The same post-dither ceiling re-clamp applies to both paths.
-    if (ditherMode != DitherMode::off)
+    //
+    // F6: Delta bypasses dither entirely (you are auditioning what
+    // limiting removes, not rendering a deliverable - brief section 3.6);
+    // it re-engages the moment the Delta toggle turns back off.
+    if (ditherMode != DitherMode::off && ! deltaListenEnabled)
     {
         const auto ditherLsb = (ditherMode == DitherMode::bit16) ? std::exp2 (-15.0f) : std::exp2 (-23.0f);
 

@@ -526,6 +526,41 @@ private:
     bool guardWasEnabled = false;
 
     //==================================================================
+    // F6 (v0.4.0): audition tools - Delta listen + Unity Gain monitor.
+    //==================================================================
+
+    // Delta needs a sample-aligned dry reference at the base rate whose
+    // path is FILTER-identical to the wet one (subtracting a dry signal
+    // that never saw the oversampler's up/down filters would leave the
+    // filters' own phase/magnitude signature as a false "removed" residue).
+    // So: a second Oversampling instance built with the exact same stage
+    // specs, whose up-sampled buffer is overwritten in the per-sample loop
+    // with the SAME lookahead-delayed dry samples the wet path multiplies
+    // (delayPushAndRead()'s return value), then down-sampled into
+    // dryBaseScratch. The dry signal additionally passes its own copy of
+    // the per-rate guard alignment delay (pure delay - the guard's
+    // correction itself is deliberately part of "processed", so Delta
+    // reveals what limiting INCLUDING the TP guard removes). Only runs
+    // while Delta is engaged or its crossfade is still settling - zero
+    // cost at the default.
+    std::unique_ptr<juce::dsp::Oversampling<float>> dryOversampler;
+    juce::AudioBuffer<float> dryBaseScratch;
+    float dryGuardDelayRing[maxChannels][guardDelayCapacity] = {};
+    bool dryPathWasActive = false;
+
+    // 10 ms linear output crossfade between the normal output and the
+    // delta bus - click-free engagement under automation (brief section
+    // 3.6). 0 = normal output, 1 = delta.
+    float deltaMixCurrent = 0.0f;
+    float deltaMixStepPerSample = 1.0f;
+
+    // Unity Gain monitor trim (= -inputGain dB while engaged), via the
+    // same 50 ms smoothing every other continuous parameter uses. When
+    // Delta is also on, Delta wins (it is already a monitor mode) and the
+    // trim target stays at unity - documented in ParameterIds.h.
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> monitorTrimSmoothed;
+
+    //==================================================================
     // Metering state (published via atomics - see the public getters).
     //==================================================================
     std::atomic<float> gainReductionDbAtomic { 0.0f };
