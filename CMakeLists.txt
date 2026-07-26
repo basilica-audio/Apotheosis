@@ -146,7 +146,19 @@ target_link_libraries(Tests PRIVATE SharedCode Catch2::Catch2)
 target_compile_definitions(Tests PRIVATE
     $<TARGET_PROPERTY:Apotheosis,COMPILE_DEFINITIONS>
     JUCE_MODAL_LOOPS_PERMITTED=1
+    # Test-only hooks in SharedCode (deterministic dither seeding for the
+    # golden-fixture harness, the T2 ceiling-clamp bypass) - never defined
+    # for the plugin targets, so shipping binaries carry none of them.
+    APOTHEOSIS_TESTING=1
+    # Absolute path to the tests/ source directory, so the Tests binary can
+    # locate the committed golden fixtures (tests/fixtures/v020) regardless
+    # of the build/working directory ctest happens to use.
+    APOTHEOSIS_TESTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests"
 )
+
+# juce::SHA256 for the golden-fixture manifest integrity hashes
+# (tests/RegressionTests.cpp) - Tests binary only, not the plugin.
+target_link_libraries(Tests PRIVATE juce::juce_cryptography)
 
 set_target_properties(Tests PROPERTIES XCODE_GENERATE_SCHEME ON)
 

@@ -1,0 +1,46 @@
+{
+  "format": "apotheosis-golden-fixtures-1",
+  "engineVersion": "0.2.0 (origin/main @ 8558679)",
+  "generatedDate": "2026-07-26T12:00:17.374+02:00",
+  "platform": "Mac OSX 26.5.1 / Apple M2",
+  "compiler": "Apple LLVM 21.0.0 (clang-2100.1.1.101)",
+  "sampleRate": 48000.0,
+  "blockSize": 2048,
+  "numBlocks": 4,
+  "numChannels": 2,
+  "layout": "raw float32, native byte order, channel 0 fully then channel 1",
+  "corpusSettings": "inputGain +4 dB, ceiling -1 dBTP, release 60 ms, all other controls at defaults",
+  "ditherFixtureSettings": "all defaults + 16-bit dither, RNG seed 0x5EEDA5D17, silence input",
+  "files": [
+    {
+      "name": "signal0_sine300.f32",
+      "signal": "300 Hz sine, amplitude 0.7",
+      "sha256": "f619f2a2e9267f9c76c8fdde212d35fb2f660ae4a56961e8ed1167351e816279"
+    },
+    {
+      "name": "signal1_sine5k.f32",
+      "signal": "5 kHz sine, amplitude 0.9",
+      "sha256": "ccaf5f33a8940a48fe0f3ec6560565f96e4f4f51bce15b00a85a14abc5803642"
+    },
+    {
+      "name": "signal2_nearNyquistIsp.f32",
+      "signal": "0.45*fs sine, amplitude 0.98 (near-Nyquist ISP)",
+      "sha256": "e516547ec96b885a88c2fe56862e62fc0be692d2c3640fd58dee5f4235fbc76f"
+    },
+    {
+      "name": "signal3_silence.f32",
+      "signal": "digital silence",
+      "sha256": "de2f256064a0af797747c2b97505dc0b9f3df0de4f489eac731c23ae9ca9cc31"
+    },
+    {
+      "name": "signal4_sine1kFullScale.f32",
+      "signal": "1 kHz sine, amplitude 1.0 (full scale)",
+      "sha256": "cf364ce50bacdfe8207c1496c2d09ce36c8d947116e62293d8a008fb5e1d5dbd"
+    },
+    {
+      "name": "dither16_legacy.f32",
+      "signal": "silence through 16-bit Legacy (v0.2.0 flat TPDF) dither, seeded RNG",
+      "sha256": "778107b6b95122372462f26fa7e39d2d26a987d57b12098f8ce7c27e4c84c85e"
+    }
+  ]
+}

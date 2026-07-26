@@ -147,6 +147,18 @@ public:
     // 4x oversampler's own round-trip latency.
     int getLatencySamples() const noexcept { return totalLatencySamples; }
 
+#if APOTHEOSIS_TESTING
+    // Test-only determinism hook, compiled into the Tests binary only
+    // (APOTHEOSIS_TESTING is defined solely on the Tests target - see
+    // CMakeLists.txt). The dither RNG is deliberately unseeded-from-outside
+    // in production (two plugin instances must not emit correlated noise),
+    // but the golden-fixture procedure (tests/RegressionTests.cpp, T0/T12)
+    // needs a bit-reproducible dither stream to pin the v0.2.0 Legacy
+    // dither path against a committed render. Setting a seed does not alter
+    // the audio algorithm in any way - it only fixes the RNG draw sequence.
+    void setDitherSeedForTests (juce::int64 seed) noexcept { ditherRng.setSeed (seed); }
+#endif
+
     // Metering readout, safe to call from any thread (message thread GUI
     // polling in particular). Values reflect the most recently processed
     // non-empty block; they do not change on a zero-sample process() call.
