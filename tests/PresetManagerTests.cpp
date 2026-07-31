@@ -38,6 +38,9 @@ namespace
             { BinaryData::adaptiveRiding_json, BinaryData::adaptiveRiding_jsonSize },
             { BinaryData::brightClipperBlend_json, BinaryData::brightClipperBlend_jsonSize },
             { BinaryData::cleanExportDithered_json, BinaryData::cleanExportDithered_jsonSize },
+            { BinaryData::transparentMastering_json, BinaryData::transparentMastering_jsonSize },
+            { BinaryData::punchyLoudStyle_json, BinaryData::punchyLoudStyle_jsonSize },
+            { BinaryData::safeArchivalTruePeak_json, BinaryData::safeArchivalTruePeak_jsonSize },
         };
     }
 
@@ -265,7 +268,7 @@ TEST_CASE ("PresetManager: every factory preset parses and loads without error",
     const auto all = manager.getAllPresets();
     const auto factoryCount = std::count_if (all.begin(), all.end(), [] (auto& e) { return e.isFactory; });
 
-    REQUIRE (factoryCount == 8); // docs/design-brief.md's Factory Presets section
+    REQUIRE (factoryCount == 11); // docs/presets.md - 8 v0.2.0 presets + 3 v0.4.0 additions
 
     for (auto& entry : all)
     {

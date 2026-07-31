@@ -10,7 +10,7 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS deployment ta
 # here at the top level avoids it being enabled implicitly deeper inside
 # JUCE's CMake helpers, which has been observed to break Ninja's generate
 # step (missing CMAKE_C_COMPILE_OBJECT rule variable).
-project(Apotheosis VERSION 0.3.0 LANGUAGES C CXX)
+project(Apotheosis VERSION 0.4.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -74,6 +74,9 @@ juce_add_binary_data(ApotheosisBinaryData SOURCES
     presets/factory/adaptiveRiding.json
     presets/factory/brightClipperBlend.json
     presets/factory/cleanExportDithered.json
+    presets/factory/transparentMastering.json
+    presets/factory/punchyLoudStyle.json
+    presets/factory/safeArchivalTruePeak.json
     resources/i18n/de.txt
     # M3 photoreal GUI assets (resources/gui/, copied from the suite's
     # Blender pre-render pipeline at .scaffold/gui-assets/ - see each asset
@@ -195,7 +198,19 @@ target_compile_definitions(Tests PRIVATE
     # Absolute path to docs/, so tests/gui/EditorSnapshotTests.cpp can write
     # the committed docs/gui-preview.png directly rather than a copy step.
     APOTHEOSIS_DOCS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/docs"
+    # Test-only hooks in SharedCode (deterministic dither seeding for the
+    # golden-fixture harness, the T2 ceiling-clamp bypass) - never defined
+    # for the plugin targets, so shipping binaries carry none of them.
+    APOTHEOSIS_TESTING=1
+    # Absolute path to the tests/ source directory, so the Tests binary can
+    # locate the committed golden fixtures (tests/fixtures/v020) regardless
+    # of the build/working directory ctest happens to use.
+    APOTHEOSIS_TESTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests"
 )
+
+# juce::SHA256 for the golden-fixture manifest integrity hashes
+# (tests/RegressionTests.cpp) - Tests binary only, not the plugin.
+target_link_libraries(Tests PRIVATE juce::juce_cryptography)
 
 set_target_properties(Tests PROPERTIES XCODE_GENERATE_SCHEME ON)
 

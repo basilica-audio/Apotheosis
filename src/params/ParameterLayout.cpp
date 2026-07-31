@@ -144,6 +144,74 @@ namespace tbst
             juce::StringArray { "Flat", "Shaped" },
             0));
 
+        //======================================================================
+        // v0.4.0 SOTA DSP additions. See ParameterIds.h for the full
+        // per-control rationale/sourcing - every default below reproduces
+        // v0.2.0's exact prior output (tests/RegressionTests.cpp's
+        // golden-fixture comparison). No editor wiring in this release: the
+        // parameters are host-visible and automatable through this layout
+        // alone; the photoreal editor gains dedicated controls in a
+        // follow-up GUI PR.
+        //======================================================================
+
+        // Style: Classic (default index 0, the literal v0.2.0 envelope code
+        // path) / Transparent / Punchy / Bus / Safe. Live-switchable; the
+        // envelope state carries over on a switch (release states re-seeded
+        // from the current gain - no snap).
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { ParamIDs::limitStyle, 1 },
+            "Style",
+            juce::StringArray { "Classic", "Transparent", "Punchy", "Bus", "Safe" },
+            0));
+
+        // Oversampling: 4x (default - the exact v0.2.0 chain) / 8x / 16x.
+        // Prepare-latched, exactly like Lookahead: takes effect at the next
+        // host-driven prepareToPlay() only. Not intended for automation.
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { ParamIDs::oversampling, 1 },
+            "Oversampling",
+            juce::StringArray { "4x", "8x", "16x" },
+            0));
+
+        // OS Filter: Minimum Phase (default, v0.2.0's filter class) /
+        // Linear Phase. Prepare-latched like Oversampling above.
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { ParamIDs::osPhase, 1 },
+            "OS Filter",
+            juce::StringArray { "Minimum Phase", "Linear Phase" },
+            0));
+
+        // True Peak Guard: opt-in measured-true-peak output correction,
+        // default Off. Latency-invariant by design (its alignment delay is
+        // always in the path), so it is safe to automate.
+        layout.add (std::make_unique<juce::AudioParameterBool> (
+            juce::ParameterID { ParamIDs::tpGuard, 1 },
+            "True Peak Guard",
+            false));
+
+        // Noise Shaping: Legacy (default index 0, the untouched v0.2.0
+        // dither code - bit-identical) / Weighted (psychoacoustic 9th-order
+        // noise-shaped requantiser). Only audible when Dither is not Off.
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { ParamIDs::noiseShaping, 1 },
+            "Noise Shaping",
+            juce::StringArray { "Legacy", "Weighted" },
+            0));
+
+        // Delta: monitor what the limiter removes, default Off. Crossfaded
+        // over 10 ms - safe to automate.
+        layout.add (std::make_unique<juce::AudioParameterBool> (
+            juce::ParameterID { ParamIDs::deltaListen, 1 },
+            "Delta",
+            false));
+
+        // Unity Gain: loudness-matched drive audition (output trimmed by
+        // -Input Gain), default Off.
+        layout.add (std::make_unique<juce::AudioParameterBool> (
+            juce::ParameterID { ParamIDs::unityGainMonitor, 1 },
+            "Unity Gain",
+            false));
+
         return layout;
     }
 }

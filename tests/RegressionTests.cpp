@@ -5,6 +5,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <juce_cryptography/juce_cryptography.h>
+
+#include <cmath>
 #include <functional>
 #include <limits>
 #include <vector>
@@ -286,5 +289,346 @@ TEST_CASE ("Guarantee 9: rapid automation of every new v0.2.0 control coexists s
 
         CHECK_NOTHROW (processor.processBlock (buffer, midi));
         CHECK (TestHelpers::allSamplesFinite (buffer));
+    }
+}
+
+//==============================================================================
+// T0/T1: golden v0.2.0 fixtures (v0.4.0 brief, section 6).
+//==============================================================================
+//
+// The A-vs-B cases above compare two engines of the SAME build, which cannot
+// detect a regression both sides share. The golden-fixture harness below
+// pins the actual v0.2.0 output to disk: the hidden [.golden-gen] generator
+// was run exactly once, at the first commit of the v0.4.0 branch - while the
+// engine was still byte-identical to origin/main @ 8558679 (v0.2.0) - and
+// the resulting raw float32 renders live in tests/fixtures/v020/ together
+// with a manifest (settings, SHA-256 per file, generation platform and
+// compiler). Every later commit re-renders the same corpus through the
+// refactored engine and compares against those files (T1 below).
+//
+// Platform pin: bit-exact float renders are only guaranteed on the
+// generation platform (macOS arm64 - local dev and the macOS CI runner).
+// Elsewhere (Windows CI - different compiler, libm, FMA contraction) the
+// comparison runs with a 1e-7 absolute tolerance instead; the in-binary
+// A-vs-B Guarantee-1 cases above keep running bit-exact everywhere as the
+// second net.
+namespace GoldenFixtures
+{
+    constexpr double fixtureSampleRate = 48000.0;
+    constexpr int fixtureBlockSize = 2048;
+    constexpr int fixtureNumBlocks = 4;
+    constexpr int fixtureNumSamples = fixtureBlockSize * fixtureNumBlocks;
+    constexpr int fixtureNumChannels = 2;
+
+    // Arbitrary but frozen: the dither fixture's RNG seed. Changing it would
+    // invalidate tests/fixtures/v020/dither16.f32.
+    constexpr juce::int64 ditherFixtureSeed = 0x5EEDA5D17LL;
+
+    struct FixtureSpec
+    {
+        const char* fileName;
+        const char* description;
+        int corpusIndex; // index into makeTestCorpus(); -1 = dither fixture (silence input)
+    };
+
+    // The 5-signal corpus mirrors makeTestCorpus() above (docs/design-brief.md
+    // Guarantee 1's list); the sixth entry is the 16-bit Legacy-dither
+    // fixture needed by T12 (tests/StereoLinkDitherShapeTests.cpp).
+    inline const std::vector<FixtureSpec>& allFixtureSpecs()
+    {
+        static const std::vector<FixtureSpec> specs = {
+            { "signal0_sine300.f32", "300 Hz sine, amplitude 0.7", 0 },
+            { "signal1_sine5k.f32", "5 kHz sine, amplitude 0.9", 1 },
+            { "signal2_nearNyquistIsp.f32", "0.45*fs sine, amplitude 0.98 (near-Nyquist ISP)", 2 },
+            { "signal3_silence.f32", "digital silence", 3 },
+            { "signal4_sine1kFullScale.f32", "1 kHz sine, amplitude 1.0 (full scale)", 4 },
+            { "dither16_legacy.f32", "silence through 16-bit Legacy (v0.2.0 flat TPDF) dither, seeded RNG", -1 },
+        };
+        return specs;
+    }
+
+    inline juce::File fixtureDirectory()
+    {
+        return juce::File (APOTHEOSIS_TESTS_DIR).getChildFile ("fixtures").getChildFile ("v020");
+    }
+
+    // Renders one fixture through a fresh engine, streaming one continuous
+    // fixtureNumSamples-long signal through fixtureNumBlocks sequential
+    // prepare()-sized chunks (NOT the in-place recirculation the A-vs-B
+    // cases use - a continuous stream keeps the later guard-delay alignment
+    // in T1 a single global shift instead of a per-iteration accumulation).
+    // Settings per the v0.4.0 brief section 6 T0: corpus renders use
+    // inputGain +4 dB / ceiling -1 dB / release 60 ms (all other controls at
+    // their defaults); the dither fixture uses all-default settings plus
+    // 16-bit dither with a seeded RNG over silence (so the entire output IS
+    // the deterministic dither noise sequence, and no delay alignment can
+    // ever apply to it).
+    inline juce::AudioBuffer<float> renderFixture (const FixtureSpec& spec)
+    {
+        TruePeakLimiterEngine engine;
+        juce::dsp::ProcessSpec processSpec { fixtureSampleRate,
+                                             static_cast<juce::uint32> (fixtureBlockSize),
+                                             static_cast<juce::uint32> (fixtureNumChannels) };
+        engine.prepare (processSpec);
+
+        juce::AudioBuffer<float> buffer (fixtureNumChannels, fixtureNumSamples);
+        buffer.clear();
+
+        if (spec.corpusIndex >= 0)
+        {
+            engine.setInputGainDb (4.0f);
+            engine.setCeilingDb (-1.0f);
+            engine.setReleaseMs (60.0f);
+
+            makeTestCorpus()[static_cast<size_t> (spec.corpusIndex)] (buffer, fixtureSampleRate);
+        }
+        else
+        {
+            engine.setDitherMode (1); // 16-bit
+            engine.setDitherSeedForTests (ditherFixtureSeed);
+        }
+
+        juce::dsp::AudioBlock<float> whole (buffer);
+
+        for (int block = 0; block < fixtureNumBlocks; ++block)
+        {
+            auto chunk = whole.getSubBlock (static_cast<size_t> (block * fixtureBlockSize),
+                                            static_cast<size_t> (fixtureBlockSize));
+            engine.process (chunk);
+        }
+
+        return buffer;
+    }
+
+    // Raw float32, native (little-endian on every supported platform)
+    // byte order, channel 0's samples then channel 1's.
+    inline juce::MemoryBlock toRawBytes (const juce::AudioBuffer<float>& buffer)
+    {
+        juce::MemoryBlock bytes;
+
+        for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+            bytes.append (buffer.getReadPointer (channel),
+                          static_cast<size_t> (buffer.getNumSamples()) * sizeof (float));
+
+        return bytes;
+    }
+
+    inline bool loadFixture (const juce::File& file, juce::AudioBuffer<float>& out)
+    {
+        juce::MemoryBlock bytes;
+
+        if (! file.loadFileAsData (bytes))
+            return false;
+
+        const auto expectedBytes = static_cast<size_t> (fixtureNumChannels)
+                                    * static_cast<size_t> (fixtureNumSamples) * sizeof (float);
+
+        if (bytes.getSize() != expectedBytes)
+            return false;
+
+        out.setSize (fixtureNumChannels, fixtureNumSamples);
+        const auto* data = static_cast<const float*> (bytes.getData());
+
+        for (int channel = 0; channel < fixtureNumChannels; ++channel)
+            for (int sample = 0; sample < fixtureNumSamples; ++sample)
+                out.setSample (channel, sample, data[channel * fixtureNumSamples + sample]);
+
+        return true;
+    }
+
+    // Generation platform pin (see the file-level comment above): fixtures
+    // were generated on macOS arm64, where float renders are reproducible
+    // bit-for-bit. That platform keeps the strict bit-identity gate.
+#if JUCE_MAC && JUCE_ARM
+    constexpr bool onGenerationPlatform = true;
+#else
+    constexpr bool onGenerationPlatform = false;
+#endif
+
+    // Off the generation platform the comparison is a drift bound, not a
+    // bit-identity check. The bound cannot be sub-ULP: one float ULP at
+    // amplitude 1.0 is already 1.19e-7, and these fixtures run full-scale
+    // signals through an oversampled FIR bank plus the limiter, so MSVC's
+    // contraction/vectorisation choices legitimately accumulate a few ULP
+    // against Clang's. (Measured worst case on the windows-latest runner:
+    // 7.7e-7.)
+    //
+    // 1e-5 absolute is ~-100 dBFS - two orders of magnitude below anything
+    // audible, and still three to four orders below what an actual DSP
+    // regression produces: a wrong filter coefficient, a missed guard-delay
+    // sample or a gain-staging slip all move the output by 1e-2..1e0 here,
+    // so this bound keeps its regression-catching power off-platform while
+    // no longer failing on arithmetic that is merely rounded differently.
+    constexpr double offPlatformAbsoluteTolerance = 1.0e-5;
+
+    // Base-rate output alignment between a fixture (rendered by the v0.2.0
+    // engine) and the current engine. v0.2.0 had no true-peak-guard delay
+    // line; the v0.4.0 engine inserts a constant per-rate-policy-tier guard
+    // delay (brief section 3.2's table: +6 base samples below 176.4 kHz) -
+    // a pure integer delay, NOT an audio-content change, compensated here
+    // exactly. The dither fixture is exempt by construction (silence in,
+    // dither noise injected at the very end of the chain, after the delay).
+    inline int fixtureAlignmentSamples()
+    {
+        return TruePeakInterpolator::guardDelaySamplesForSampleRate (fixtureSampleRate);
+    }
+}
+
+// Hidden generator (leading '.' tag: never part of a default run). Run
+// exactly once via `Tests "[.golden-gen]"` at the branch's first commit -
+// see the harness comment above. Re-running it later would overwrite the
+// fixtures with post-refactor output and defeat the whole purpose; the
+// committed files in tests/fixtures/v020/ are the source of truth.
+TEST_CASE ("Golden fixture generator: render and commit the v0.2.0 reference outputs", "[.golden-gen]")
+{
+    const auto dir = GoldenFixtures::fixtureDirectory();
+    REQUIRE (dir.createDirectory().wasOk());
+
+    auto* manifestObject = new juce::DynamicObject();
+    manifestObject->setProperty ("format", "apotheosis-golden-fixtures-1");
+    manifestObject->setProperty ("engineVersion", "0.2.0 (origin/main @ 8558679)");
+    manifestObject->setProperty ("generatedDate", juce::Time::getCurrentTime().toISO8601 (true));
+    manifestObject->setProperty ("platform", juce::SystemStats::getOperatingSystemName()
+                                              + " / " + juce::SystemStats::getCpuModel());
+#if defined (__VERSION__)
+    manifestObject->setProperty ("compiler", juce::String (__VERSION__));
+#endif
+    manifestObject->setProperty ("sampleRate", GoldenFixtures::fixtureSampleRate);
+    manifestObject->setProperty ("blockSize", GoldenFixtures::fixtureBlockSize);
+    manifestObject->setProperty ("numBlocks", GoldenFixtures::fixtureNumBlocks);
+    manifestObject->setProperty ("numChannels", GoldenFixtures::fixtureNumChannels);
+    manifestObject->setProperty ("layout", "raw float32, native byte order, channel 0 fully then channel 1");
+    manifestObject->setProperty ("corpusSettings", "inputGain +4 dB, ceiling -1 dBTP, release 60 ms, all other controls at defaults");
+    manifestObject->setProperty ("ditherFixtureSettings", "all defaults + 16-bit dither, RNG seed 0x5EEDA5D17, silence input");
+
+    juce::Array<juce::var> files;
+
+    for (const auto& spec : GoldenFixtures::allFixtureSpecs())
+    {
+        const auto rendered = GoldenFixtures::renderFixture (spec);
+        const auto bytes = GoldenFixtures::toRawBytes (rendered);
+        const auto file = dir.getChildFile (spec.fileName);
+
+        REQUIRE (file.replaceWithData (bytes.getData(), bytes.getSize()));
+
+        auto* fileObject = new juce::DynamicObject();
+        fileObject->setProperty ("name", spec.fileName);
+        fileObject->setProperty ("signal", spec.description);
+        fileObject->setProperty ("sha256", juce::SHA256 (bytes.getData(), bytes.getSize()).toHexString());
+        files.add (juce::var (fileObject));
+    }
+
+    manifestObject->setProperty ("files", files);
+
+    const auto manifestFile = dir.getChildFile ("manifest.json");
+    REQUIRE (manifestFile.replaceWithText (juce::JSON::toString (juce::var (manifestObject)) + "\n"));
+}
+
+TEST_CASE ("T1: current engine output at v0.2.0-equivalent settings matches the committed golden fixtures",
+           "[regression][golden][guarantee1]")
+{
+    const auto dir = GoldenFixtures::fixtureDirectory();
+    INFO ("fixture directory: " << dir.getFullPathName());
+    REQUIRE (dir.isDirectory()); // generated+committed at the branch's first commit - see the harness comment
+
+    // Manifest integrity: every committed fixture must hash to the value
+    // recorded at generation time (guards against silent fixture edits or
+    // git/filesystem corruption making T1 pass vacuously against a
+    // different reference than the one generated at 8558679).
+    const auto manifest = juce::JSON::parse (dir.getChildFile ("manifest.json").loadFileAsString());
+    REQUIRE (manifest.isObject());
+
+    for (const auto& spec : GoldenFixtures::allFixtureSpecs())
+    {
+        CAPTURE (spec.fileName, spec.description);
+
+        juce::AudioBuffer<float> fixture;
+        REQUIRE (GoldenFixtures::loadFixture (dir.getChildFile (spec.fileName), fixture));
+
+        // Hash check against the manifest entry.
+        {
+            const auto bytes = GoldenFixtures::toRawBytes (fixture);
+            const auto actualHash = juce::SHA256 (bytes.getData(), bytes.getSize()).toHexString();
+            juce::String expectedHash;
+
+            for (const auto& entry : *manifest.getProperty ("files", {}).getArray())
+                if (entry.getProperty ("name", {}).toString() == spec.fileName)
+                    expectedHash = entry.getProperty ("sha256", {}).toString();
+
+            REQUIRE (actualHash == expectedHash);
+        }
+
+        const auto rendered = GoldenFixtures::renderFixture (spec);
+
+        // Guard-delay alignment (brief section 3.2): a pure integer delay is
+        // NOT an audio-content change, so the comparison shifts by the
+        // per-rate constant and compares the overlapping range. The dither
+        // fixture is exempt (noise injected after the delay line - see
+        // renderFixture()).
+        const auto alignment = spec.corpusIndex >= 0 ? GoldenFixtures::fixtureAlignmentSamples() : 0;
+        const auto comparableSamples = GoldenFixtures::fixtureNumSamples - alignment;
+
+        int mismatches = 0;
+        int firstMismatchChannel = -1;
+        int firstMismatchSample = -1;
+        double worstAbsoluteDifference = 0.0;
+
+        for (int channel = 0; channel < GoldenFixtures::fixtureNumChannels; ++channel)
+        {
+            for (int sample = 0; sample < comparableSamples; ++sample)
+            {
+                const auto expected = fixture.getSample (channel, sample);
+                const auto actual = rendered.getSample (channel, sample + alignment);
+                const auto difference = std::abs (static_cast<double> (actual) - static_cast<double> (expected));
+
+                const auto matches = GoldenFixtures::onGenerationPlatform
+                                         ? (actual == expected)
+                                         : (difference <= GoldenFixtures::offPlatformAbsoluteTolerance);
+
+                if (! matches)
+                {
+                    if (mismatches == 0)
+                    {
+                        firstMismatchChannel = channel;
+                        firstMismatchSample = sample;
+                    }
+
+                    ++mismatches;
+                    worstAbsoluteDifference = juce::jmax (worstAbsoluteDifference, difference);
+                }
+            }
+        }
+
+        CAPTURE (alignment, firstMismatchChannel, firstMismatchSample, worstAbsoluteDifference,
+                 GoldenFixtures::onGenerationPlatform);
+        CHECK (mismatches == 0);
+    }
+}
+
+TEST_CASE ("T1: the guard delay is the per-rate-policy constant - 6 base samples below 176.4 kHz, 0 above - never fs-scaled",
+           "[regression][golden][latency]")
+{
+    // Brief section 3.2's binding table: the BS.1770-4 bank's group delay
+    // is (48-1)/(2*4) = 5.875 BASE-RATE samples wherever it runs - the 2x
+    // tier (88.2-96 kHz) reuses the same bank (phases 0/2), so the constant
+    // is identical there, and the >= 176.4 kHz tier is a zero-delay
+    // pass-through.
+    struct RateExpectation { double sampleRate; int expectedGuardDelay; };
+
+    for (const auto& expectation : { RateExpectation { 44100.0, 6 },
+                                     RateExpectation { 48000.0, 6 },
+                                     RateExpectation { 96000.0, 6 },
+                                     RateExpectation { 192000.0, 0 } })
+    {
+        CAPTURE (expectation.sampleRate);
+
+        CHECK (TruePeakInterpolator::guardDelaySamplesForSampleRate (expectation.sampleRate)
+               == expectation.expectedGuardDelay);
+
+        TruePeakLimiterEngine engine;
+        juce::dsp::ProcessSpec spec { expectation.sampleRate, 512, 2 };
+        engine.prepare (spec);
+
+        CHECK (engine.getTpGuardDelaySamples() == expectation.expectedGuardDelay);
     }
 }

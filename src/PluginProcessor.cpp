@@ -48,6 +48,9 @@ namespace
             { BinaryData::adaptiveRiding_json, BinaryData::adaptiveRiding_jsonSize },
             { BinaryData::brightClipperBlend_json, BinaryData::brightClipperBlend_jsonSize },
             { BinaryData::cleanExportDithered_json, BinaryData::cleanExportDithered_jsonSize },
+            { BinaryData::transparentMastering_json, BinaryData::transparentMastering_jsonSize },
+            { BinaryData::punchyLoudStyle_json, BinaryData::punchyLoudStyle_jsonSize },
+            { BinaryData::safeArchivalTruePeak_json, BinaryData::safeArchivalTruePeak_jsonSize },
         };
     }
 }
@@ -71,6 +74,13 @@ ApotheosisAudioProcessor::ApotheosisAudioProcessor()
     autoReleasePercent = apvts.getRawParameterValue (ParamIDs::autoRelease);
     stereoLinkPercent = apvts.getRawParameterValue (ParamIDs::stereoLink);
     ditherShapeChoice = apvts.getRawParameterValue (ParamIDs::ditherShape);
+    limitStyleChoice = apvts.getRawParameterValue (ParamIDs::limitStyle);
+    oversamplingChoice = apvts.getRawParameterValue (ParamIDs::oversampling);
+    osPhaseChoice = apvts.getRawParameterValue (ParamIDs::osPhase);
+    tpGuardEnabled = apvts.getRawParameterValue (ParamIDs::tpGuard);
+    noiseShapingChoice = apvts.getRawParameterValue (ParamIDs::noiseShaping);
+    deltaListenEnabled = apvts.getRawParameterValue (ParamIDs::deltaListen);
+    unityGainMonitorEnabled = apvts.getRawParameterValue (ParamIDs::unityGainMonitor);
 
     jassert (inputGainDb != nullptr);
     jassert (ceilingDb != nullptr);
@@ -83,6 +93,13 @@ ApotheosisAudioProcessor::ApotheosisAudioProcessor()
     jassert (autoReleasePercent != nullptr);
     jassert (stereoLinkPercent != nullptr);
     jassert (ditherShapeChoice != nullptr);
+    jassert (limitStyleChoice != nullptr);
+    jassert (oversamplingChoice != nullptr);
+    jassert (osPhaseChoice != nullptr);
+    jassert (tpGuardEnabled != nullptr);
+    jassert (noiseShapingChoice != nullptr);
+    jassert (deltaListenEnabled != nullptr);
+    jassert (unityGainMonitorEnabled != nullptr);
 
     // M2 default resolution: user "Default" preset > factory "Default"
     // preset > the ParameterLayout defaults apvts was just constructed
@@ -174,6 +191,20 @@ void ApotheosisAudioProcessor::prepareToPlay (double sampleRate, int samplesPerB
     engine.setStereoLinkPercent (stereoLinkPercent->load (std::memory_order_relaxed));
     engine.setDitherShape (static_cast<int> (ditherShapeChoice->load (std::memory_order_relaxed)));
 
+    // v0.4.0: Oversampling/OS Filter are prepare-latched with exactly
+    // Lookahead's contract (seeded here, read by engine.prepare(), never
+    // re-applied per block) - deliberately no async re-prepare machinery in
+    // this release, so a change takes effect at the next host-driven
+    // prepareToPlay() only (see ParameterIds.h::oversampling). The
+    // remaining v0.4.0 controls are live and also pushed per block below.
+    engine.setLimitStyle (static_cast<int> (limitStyleChoice->load (std::memory_order_relaxed)));
+    engine.setOversamplingFactor (static_cast<int> (oversamplingChoice->load (std::memory_order_relaxed)));
+    engine.setOsPhase (static_cast<int> (osPhaseChoice->load (std::memory_order_relaxed)));
+    engine.setTpGuard (tpGuardEnabled->load (std::memory_order_relaxed) >= 0.5f);
+    engine.setNoiseShaping (static_cast<int> (noiseShapingChoice->load (std::memory_order_relaxed)));
+    engine.setDeltaListen (deltaListenEnabled->load (std::memory_order_relaxed) >= 0.5f);
+    engine.setUnityGainMonitor (unityGainMonitorEnabled->load (std::memory_order_relaxed) >= 0.5f);
+
     engine.prepare (spec);
 
     // Latency = Lookahead (converted to samples) + the 4x oversampler's own
@@ -236,6 +267,15 @@ void ApotheosisAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
     engine.setStereoLinkPercent (stereoLinkPercent->load (std::memory_order_relaxed));
     engine.setDitherShape (static_cast<int> (ditherShapeChoice->load (std::memory_order_relaxed)));
 
+    // v0.4.0 live controls. Oversampling/OS Filter are deliberately NOT
+    // re-applied here - they are prepare-latched, exactly like Lookahead
+    // (see prepareToPlay() above and ParameterIds.h::oversampling).
+    engine.setLimitStyle (static_cast<int> (limitStyleChoice->load (std::memory_order_relaxed)));
+    engine.setTpGuard (tpGuardEnabled->load (std::memory_order_relaxed) >= 0.5f);
+    engine.setNoiseShaping (static_cast<int> (noiseShapingChoice->load (std::memory_order_relaxed)));
+    engine.setDeltaListen (deltaListenEnabled->load (std::memory_order_relaxed) >= 0.5f);
+    engine.setUnityGainMonitor (unityGainMonitorEnabled->load (std::memory_order_relaxed) >= 0.5f);
+
     juce::dsp::AudioBlock<float> block (buffer);
     engine.process (block);
 }
@@ -254,7 +294,21 @@ juce::AudioProcessorEditor* ApotheosisAudioProcessor::createEditor()
 //==============================================================================
 void ApotheosisAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    const auto state = apvts.copyState();
+    auto state = apvts.copyState();
+
+    // State schema versioning (v0.4.0, schema v3 - independent of the
+    // product version): a plain property on the APVTS root tree.
+    //   v1 = the seven v0.1 parameters, no version property
+    //   v2 = + attack/autoRelease/stereoLink/ditherShape, no version property
+    //   v3 = + the seven v0.4.0 parameters, stateVersion="3"
+    // The loader (setStateInformation below) needs no branching: a state
+    // with the property absent is v1/v2 by definition (inferable from the
+    // presence of the `attack` parameter, see tests/StateMigrationTests.cpp),
+    // and every migration is additive-defaults - any parameter ID missing
+    // from the incoming tree keeps its neutral default, which reproduces
+    // the older version's behaviour exactly (Guarantee 7 lineage).
+    state.setProperty ("stateVersion", "3", nullptr);
+
     const std::unique_ptr<juce::XmlElement> xml (state.createXml());
     copyXmlToBinary (*xml, destData);
 }
@@ -263,6 +317,13 @@ void ApotheosisAudioProcessor::setStateInformation (const void* data, int sizeIn
 {
     const std::unique_ptr<juce::XmlElement> xmlState (getXmlFromBinary (data, sizeInBytes));
 
+    // Additive-defaults migration for every schema version (see
+    // getStateInformation() above): replaceState() applies the parameters
+    // present in the incoming tree and resets absent ones to their layout
+    // defaults - which are all neutral by the v0.2.0/v0.4.0 design rules -
+    // so v1/v2/v3 states all load through this single unconditional path.
+    // Unknown properties (e.g. a newer schema's additions, or the GUI's
+    // uiScaleStep) ride along untouched inside the tree.
     if (xmlState != nullptr && xmlState->hasTagName (apvts.state.getType()))
         apvts.replaceState (juce::ValueTree::fromXml (*xmlState));
 }

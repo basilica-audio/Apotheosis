@@ -1,5 +1,10 @@
 #pragma once
 
+#include "GainEnvelopeStages.h"
+#include "GatedLoudnessMeter.h"
+#include "PsychoacousticDither.h"
+#include "TruePeakInterpolator.h"
+
 #include <juce_dsp/juce_dsp.h>
 
 #include <atomic>
@@ -85,6 +90,35 @@ public:
         shaped = 1,
     };
 
+    // v0.4.0 Style engine (docs/manual.md per-style table). classic is the
+    // literal v0.2.0 envelope code path - rectangular sliding-min attack +
+    // binary transient classifier - kept verbatim behind a top-level
+    // dispatch so the golden-fixture regression net (tests/
+    // RegressionTests.cpp) stays meaningful. The other four styles use the
+    // cascaded-box FIR attack smoother + dual concurrent release stages
+    // (src/dsp/GainEnvelopeStages.h). Indices match the "Style"
+    // AudioParameterChoice.
+    enum class LimitStyle
+    {
+        classic = 0,
+        transparent = 1,
+        punchy = 2,
+        bus = 3,
+        safe = 4,
+    };
+
+    // v0.4.0 noise shaping selector. legacy routes through the untouched
+    // v0.2.0 dither code above (bit-identical, including the shared-RNG
+    // draw order); weighted engages the psychoacoustic 9th-order
+    // error-feedback requantiser (src/dsp/PsychoacousticDither.h). Only
+    // audible when DitherMode != off. Indices match the "Noise Shaping"
+    // AudioParameterChoice.
+    enum class NoiseShapingMode
+    {
+        legacy = 0,
+        weighted = 1,
+    };
+
     TruePeakLimiterEngine();
 
     // Allocates all DSP state (oversampler, lookahead delay buffer,
@@ -142,10 +176,57 @@ public:
     void setStereoLinkPercent (float newStereoLinkPercent) noexcept;
     void setDitherShape (int newDitherShapeIndex) noexcept;
 
+    // v0.4.0 SOTA DSP additions (see ParameterIds.h for the per-control
+    // contracts). setLimitStyle/setTpGuard/setNoiseShaping/setDeltaListen/
+    // setUnityGainMonitor are cheap discrete switches safe to call every
+    // block from the audio thread (no allocation; style switches re-seed
+    // the envelope followers from the current gain so there is no snap).
+    // setOversamplingFactor/setOsPhase are LATCHED at prepare() with
+    // exactly the same contract as setLookaheadMs(): the setter only
+    // stores the value, prepare() reads it, and the change takes effect at
+    // the next host-driven re-prepare - there is deliberately no async
+    // re-prepare machinery in this release.
+    void setLimitStyle (int newLimitStyleIndex) noexcept;
+    void setOversamplingFactor (int newOversamplingChoiceIndex) noexcept; // 0 = 4x, 1 = 8x, 2 = 16x
+    void setOsPhase (int newOsPhaseIndex) noexcept; // 0 = Minimum Phase, 1 = Linear Phase
+    void setTpGuard (bool shouldEnableTpGuard) noexcept;
+    void setNoiseShaping (int newNoiseShapingIndex) noexcept;
+    void setDeltaListen (bool shouldEnableDeltaListen) noexcept;
+    void setUnityGainMonitor (bool shouldEnableUnityGainMonitor) noexcept;
+
     // Total reported latency in samples, valid after prepare() has run:
     // Lookahead (converted to samples at the prepared sample rate) plus the
-    // 4x oversampler's own round-trip latency.
+    // oversampler's own round-trip latency plus the per-rate true-peak-guard
+    // alignment delay (v0.4.0 - a CONSTANT per rate-policy tier: +6 base
+    // samples below 176.4 kHz, +0 at/above; see TruePeakInterpolator).
     int getLatencySamples() const noexcept { return totalLatencySamples; }
+
+    // The true-peak-guard alignment delay portion of getLatencySamples(),
+    // valid after prepare(). Always in the signal path (a pure integer
+    // delay when the guard is Off) so that automating tpGuard can never
+    // change the reported latency - see ParameterIds.h::tpGuard.
+    int getTpGuardDelaySamples() const noexcept { return guardDelaySamples; }
+
+#if APOTHEOSIS_TESTING
+    // Test-only hooks for the T2 zero-overshoot property test (brief
+    // section 6): bypassing the final ceiling clamp proves the FIR-smoothed
+    // envelope alone never overshoots (the mathematical guarantee, not the
+    // clamp, is what T2 asserts), and lastOsDomainPeakForTests exposes the
+    // oversampled-domain post-gain peak the proof is stated in. Compiled
+    // into the Tests binary only.
+    bool bypassCeilingClampForTests = false;
+    float lastOsDomainPeakForTests = 0.0f;
+
+    // Test-only determinism hook, compiled into the Tests binary only
+    // (APOTHEOSIS_TESTING is defined solely on the Tests target - see
+    // CMakeLists.txt). The dither RNG is deliberately unseeded-from-outside
+    // in production (two plugin instances must not emit correlated noise),
+    // but the golden-fixture procedure (tests/RegressionTests.cpp, T0/T12)
+    // needs a bit-reproducible dither stream to pin the v0.2.0 Legacy
+    // dither path against a committed render. Setting a seed does not alter
+    // the audio algorithm in any way - it only fixes the RNG draw sequence.
+    void setDitherSeedForTests (juce::int64 seed) noexcept { ditherRng.setSeed (seed); }
+#endif
 
     // Metering readout, safe to call from any thread (message thread GUI
     // polling in particular). Values reflect the most recently processed
@@ -154,6 +235,10 @@ public:
     float getOutputTruePeakDb() const noexcept { return outputTruePeakDbAtomic.load (std::memory_order_relaxed); }
     float getMomentaryLufs() const noexcept { return momentaryLufsAtomic.load (std::memory_order_relaxed); }
     float getShortTermLufs() const noexcept { return shortTermLufsAtomic.load (std::memory_order_relaxed); }
+    // v0.4.0 (F5): now the BS.1770-4 gated measurement (400 ms blocks, 75 %
+    // overlap, -70 LUFS absolute + -10 LU relative gate) - the former
+    // "documented deviation" absolute-gate-only value is gone. -100.0f
+    // until the first gating block passes the absolute gate.
     float getIntegratedLufs() const noexcept { return integratedLufsAtomic.load (std::memory_order_relaxed); }
 
     // M3 photoreal GUI (victorian design) additions: the small INPUT/OUTPUT
@@ -169,9 +254,32 @@ public:
     float getInputLevelDb() const noexcept { return inputLevelDbAtomic.load (std::memory_order_relaxed); }
     float getOutputLevelDb() const noexcept { return outputLevelDbAtomic.load (std::memory_order_relaxed); }
 
+    // v0.4.0 (F5): EBU Tech 3342 Loudness Range (95th - 10th percentile of
+    // relative-gated short-term loudness), in LU. 0.0f until enough signal
+    // has accumulated (needs the 3 s short-term window primed).
+    float getLoudnessRangeLu() const noexcept { return lraLuAtomic.load (std::memory_order_relaxed); }
+
+    // v0.4.0 metering additions. The true-peak readout (and its max hold)
+    // is now a spec-shaped BS.1770-4 4x-interpolated measurement of the
+    // final base-rate output - i.e. what a compliant external meter will
+    // read - replacing v0.2.0's abs-peak-in-the-oversampled-domain readout
+    // (metering-only change, no audio impact). Both max holds are
+    // resettable from the UI/message thread.
+    float getTruePeakMaxHoldDb() const noexcept { return truePeakMaxHoldDbAtomic.load (std::memory_order_relaxed); }
+    void resetTruePeakMaxHold() noexcept { truePeakMaxHoldDbAtomic.store (-100.0f, std::memory_order_relaxed); }
+    float getMaxGainReductionDb() const noexcept { return maxGainReductionDbAtomic.load (std::memory_order_relaxed); }
+    void resetMaxGainReduction() noexcept { maxGainReductionDbAtomic.store (0.0f, std::memory_order_relaxed); }
+
 private:
-    static constexpr int oversamplingFactorPow2 = 2; // 2^2 = 4x oversampling
-    static constexpr int oversamplingFactor = 1 << oversamplingFactorPow2;
+    // v0.4.0 (F3): the oversampling factor is prepare-latched runtime
+    // state - 2^2 = 4x (the v0.2.0 chain, default) up to 2^4 = 16x -
+    // derived in prepare() from lastOversamplingChoiceIndex with the
+    // high-base-rate derating cap (8x max at >= 96 kHz, 4x max at
+    // >= 176.4 kHz; the parameter keeps its stored value, the engine
+    // clamps internally).
+    int oversamplingFactorPow2 = 2;
+    int oversamplingFactor = 1 << 2;
+
     static constexpr double smoothingTimeSeconds = 0.05;
 
     // Extra internal headroom subtracted (in dB) from the user-facing
@@ -191,15 +299,6 @@ private:
     // reconstruction-filter ripple - see process(). Has zero effect at
     // Clip Mix = 0%.
     static constexpr float clipExtraHeadroomDb = 1.0f;
-
-    // LUFS metering absolute gate (ITU-R BS.1770-4): momentary loudness
-    // readings quieter than this are excluded from the Integrated Loudness
-    // accumulator. See docs/architecture.md for the documented deviations
-    // from the full two-pass relative-gated spec algorithm (this engine
-    // implements the absolute gate only, evaluated once per processed
-    // block rather than per 400ms gating block, for O(1) real-time-safe
-    // accumulation).
-    static constexpr float integratedGateLufs = -70.0f;
 
     // Maximum channel count this engine supports independent per-channel
     // state for - matches PluginProcessor::isBusesLayoutSupported's
@@ -340,6 +439,13 @@ private:
     // plain-TPDF dither at every setting.
     float previousDitherTpdf[maxChannels] = { 0.0f, 0.0f };
 
+    // F4 (v0.4.0): the psychoacoustic 9th-order error-feedback requantiser
+    // used when noiseShapingMode == weighted (and DitherMode != off). The
+    // Legacy path above keeps the shared ditherRng and its exact draw
+    // order untouched; this object owns its own per-channel independent
+    // RNG streams - see PsychoacousticDither.h.
+    PsychoacousticDither psychoDither;
+
     // Last commanded values (ParameterLayout defaults until a setter is
     // called), re-applied on every prepare() so re-prepare (sample-rate
     // change, etc.) never silently resets a live parameter back to a
@@ -353,6 +459,120 @@ private:
     float lastAutoReleasePercent = 0.0f;
     float lastStereoLinkPercent = 100.0f;
 
+    // v0.4.0 additions. limitStyle/tpGuard/noiseShaping/deltaListen/
+    // unityGainMonitor are live discrete switches; the two oversampling
+    // values are prepare()-latched (same contract as lastLookaheadMs).
+    LimitStyle limitStyle = LimitStyle::classic;
+    int lastOversamplingChoiceIndex = 0; // 0 = 4x (v0.2.0 chain), 1 = 8x, 2 = 16x
+    int lastOsPhaseIndex = 0; // 0 = Minimum Phase (v0.2.0 filter class), 1 = Linear Phase
+    bool tpGuardEnabled = false;
+    NoiseShapingMode noiseShapingMode = NoiseShapingMode::legacy;
+    bool deltaListenEnabled = false;
+    bool unityGainMonitorEnabled = false;
+
+    //==================================================================
+    // F1/F7 (v0.4.0): style engine - cascaded-box FIR attack smoother +
+    // dual concurrent release stages (non-Classic styles only; Classic is
+    // the literal v0.2.0 code path behind the per-sample dispatch in
+    // processChunk()). Per-style tunings are fixed constants - see
+    // tuningForStyle() in the .cpp and docs/manual.md's table.
+    //==================================================================
+
+    struct StyleTuning
+    {
+        int numBoxes; // cascaded moving averages (1-3)
+        float smootherSpanFraction; // of the (attack-scaled) lookahead window
+        double tauFastSeconds;
+        double tauSlowSeconds;
+        double fastCapDb; // fast stage handles only the top this-many dB of GR
+    };
+
+    static StyleTuning tuningForStyle (LimitStyle style) noexcept;
+
+    static constexpr int maxSmootherBoxes = 3;
+
+    BoxFilter smootherBoxes[maxChannels][maxSmootherBoxes];
+    DualStageRelease dualRelease[maxChannels];
+
+    // The style the per-sample state currently belongs to; latched at the
+    // top of each chunk. A change re-seeds the target style's release/
+    // smoother state from the current gain (click-free switch, no snap).
+    LimitStyle activeStyle = LimitStyle::classic;
+    int activeNumBoxes = 2;
+
+    // F7: in non-Classic styles the Auto Release depth average updates at a
+    // fixed 100 Hz internal cadence (styleTickIntervalOsSamples of OS-rate
+    // samples per tick, coefficient computed for exactly that cadence) -
+    // independent of the host buffer size, unlike Classic's verbatim
+    // v0.2.0 once-per-chunk law.
+    int styleTickIntervalOsSamples = 1;
+    int styleTickCountdown = 1;
+    double styleTickAvgCoeff = 0.0;
+
+    //==================================================================
+    // F2 (v0.4.0): true-peak guard + measured true-peak metering.
+    //==================================================================
+
+    // Detector feeding the tpGuard correction (runs on the pre-delay
+    // output) and the one feeding the reported dBTP metering (runs on the
+    // final output, after dither) - two independent instances because they
+    // observe different points of the chain.
+    TruePeakInterpolator guardDetector;
+    TruePeakInterpolator meterDetector;
+
+    // The always-in-path alignment delay (base rate). Constant per
+    // rate-policy tier - see TruePeakInterpolator::
+    // guardDelaySamplesForSampleRate() - so capacity 8 covers the maximum
+    // (6) with ring-arithmetic headroom.
+    static constexpr int guardDelayCapacity = 8;
+    int guardDelaySamples = 0;
+    float guardDelayRing[maxChannels][guardDelayCapacity] = {};
+    int guardDelayWritePos = 0;
+
+    // Guard correction state: per-channel micro-duck gain (1 = no
+    // correction), instantaneous attack (a min() against the exact excess),
+    // 5 ms exponential release toward unity - Oxford AUTO COMP lineage,
+    // "by the minimum amount required, and only for the duration of the
+    // error".
+    double guardGainState[maxChannels] = { 1.0, 1.0 };
+    double guardReleaseCoeff = 0.0;
+    bool guardWasEnabled = false;
+
+    //==================================================================
+    // F6 (v0.4.0): audition tools - Delta listen + Unity Gain monitor.
+    //==================================================================
+
+    // Delta needs a sample-aligned dry reference at the base rate whose
+    // path is FILTER-identical to the wet one (subtracting a dry signal
+    // that never saw the oversampler's up/down filters would leave the
+    // filters' own phase/magnitude signature as a false "removed" residue).
+    // So: a second Oversampling instance built with the exact same stage
+    // specs, whose up-sampled buffer is overwritten in the per-sample loop
+    // with the SAME lookahead-delayed dry samples the wet path multiplies
+    // (delayPushAndRead()'s return value), then down-sampled into
+    // dryBaseScratch. The dry signal additionally passes its own copy of
+    // the per-rate guard alignment delay (pure delay - the guard's
+    // correction itself is deliberately part of "processed", so Delta
+    // reveals what limiting INCLUDING the TP guard removes). Only runs
+    // while Delta is engaged or its crossfade is still settling - zero
+    // cost at the default.
+    std::unique_ptr<juce::dsp::Oversampling<float>> dryOversampler;
+    juce::AudioBuffer<float> dryBaseScratch;
+    float dryGuardDelayRing[maxChannels][guardDelayCapacity] = {};
+    bool dryPathWasActive = false;
+
+    // 10 ms linear output crossfade between the normal output and the
+    // delta bus - click-free engagement under automation (brief section
+    // 3.6). 0 = normal output, 1 = delta.
+    float deltaMixCurrent = 0.0f;
+    float deltaMixStepPerSample = 1.0f;
+
+    // Unity Gain monitor trim (= -inputGain dB while engaged), via the
+    // same 50 ms smoothing every other continuous parameter uses. When
+    // Delta is also on, Delta wins (it is already a monitor mode) and the
+    // trim target stays at unity - documented in ParameterIds.h.
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> monitorTrimSmoothed;
+
     //==================================================================
     // Metering state (published via atomics - see the public getters).
     //==================================================================
@@ -363,6 +583,10 @@ private:
     std::atomic<float> integratedLufsAtomic { -100.0f };
     std::atomic<float> inputLevelDbAtomic { -100.0f };
     std::atomic<float> outputLevelDbAtomic { -100.0f };
+
+    std::atomic<float> lraLuAtomic { 0.0f };
+    std::atomic<float> truePeakMaxHoldDbAtomic { -100.0f };
+    std::atomic<float> maxGainReductionDbAtomic { 0.0f };
 
     // ITU-R BS.1770-4 K-weighting pre-filter: stage 1 (high shelf) then
     // stage 2 (high pass), applied per channel at the BASE sample rate
@@ -391,8 +615,11 @@ private:
     LoudnessWindow momentaryWindow;
     LoudnessWindow shortTermWindow;
 
-    double integratedPowerSum = 0.0;
-    juce::int64 integratedSampleCount = 0;
+    // F5 (v0.4.0): BS.1770-4 gated Integrated Loudness + EBU Tech 3342 LRA
+    // (src/dsp/GatedLoudnessMeter.h) - replaces v0.2.0's documented-
+    // deviation absolute-gate-only accumulator. Metering only, zero
+    // audio-path impact.
+    GatedLoudnessMeter gatedMeter;
 
     // Does the actual per-chunk work formerly done directly inside
     // process(): `block` here is guaranteed by process() to be no larger
