@@ -94,6 +94,33 @@ juce_add_binary_data(ApotheosisBinaryData SOURCES
     # Brand icon (already the plugin's ICON_BIG; embedded here additionally
     # so the editor can draw it in the faceplate's header roundel).
     docs/assets/icon-256.png
+    # M3 photoreal GUI ("victorian" faceplate design, owner-approved -
+    # supersedes the faceplate/knob/vu assets above, which are left
+    # embedded and unreferenced by the current editor rather than removed,
+    # see PluginEditorLayout.h's top-of-file docs) - copied verbatim from
+    # brand/mocks/victorian/ (repo-relative to the suite root, one level
+    # above this repo; see docs/gui-mapping.md for the full provenance and
+    # parameter-mapping table). Exactly one baked master faceplate plus its
+    # small set of live-overlay source assets:
+    #   - master_victorian.png: the SOLE faceplate baseline (copied from
+    #     master-01-base.png) - oak frame, brass plate, empty grand GR dial
+    #     (tick arc + red zone baked in), tube bay at full glow, 3 empty
+    #     small dials, 3 knobs at 12 o'clock.
+    #   - needle_{mainVU,smallMeterTop,smallMeterMid,smallMeterBottom}_
+    #     victorian.png: the 4 master-extracted, pivot-centred needle
+    #     sprites (components/needle-*.png) - rotated live by
+    #     src/gui/HubNeedle.
+    #   - tube_glow_victorian.png: the tube-bay glow diff layer
+    #     (components/tube-glow.png) - src/gui/SubtractiveGlow builds a
+    #     "fully dim" frame from this once at construction and cross-blends
+    #     it against the baseline live (see that class's own runtime-model
+    #     docs).
+    resources/gui/master_victorian.png
+    resources/gui/needle_mainVU_victorian.png
+    resources/gui/needle_smallMeterTop_victorian.png
+    resources/gui/needle_smallMeterMid_victorian.png
+    resources/gui/needle_smallMeterBottom_victorian.png
+    resources/gui/tube_glow_victorian.png
 )
 
 # ==============================================================================
@@ -165,6 +192,9 @@ target_link_libraries(Tests PRIVATE SharedCode Catch2::Catch2)
 target_compile_definitions(Tests PRIVATE
     $<TARGET_PROPERTY:Apotheosis,COMPILE_DEFINITIONS>
     JUCE_MODAL_LOOPS_PERMITTED=1
+    # Absolute path to docs/, so tests/gui/EditorSnapshotTests.cpp can write
+    # the committed docs/gui-preview.png directly rather than a copy step.
+    APOTHEOSIS_DOCS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/docs"
 )
 
 set_target_properties(Tests PROPERTIES XCODE_GENERATE_SCHEME ON)

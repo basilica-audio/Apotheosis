@@ -1,125 +1,70 @@
 #include "PluginEditor.h"
 #include "PluginEditorLayout.h"
 #include "PluginProcessor.h"
-#include "gui/ImageDensity.h"
 #include "params/ParameterIds.h"
 #include "presets/Localisation.h"
 
 #include <BinaryData.h>
+
+#include <cmath>
+#include <utility>
 
 namespace
 {
     // Base (@1x, 100% scale) faceplate geometry lives in PluginEditorLayout.h
     // (apth::layout) rather than here, so tests/gui/EditorLayoutTests.cpp can
     // assert layout invariants against the exact constants this file lays
-    // components out with - see that header's docs.
+    // components out with.
     using namespace apth::layout;
-
-    // Which of the three knob-bearing bays a control lives in - matches
-    // layout-manifest.json's "controls" list per bay 1:1.
-    enum class Bay
-    {
-        limiter,
-        release,
-        output
-    };
-
-    juce::Rectangle<int> bayRectFor (Bay bay)
-    {
-        switch (bay)
-        {
-            case Bay::limiter: return limiterBay1x;
-            case Bay::release: return releaseBay1x;
-            case Bay::output:  return outputBay1x;
-        }
-
-        return {};
-    }
-
-    struct BayGrid
-    {
-        int cols;
-        int rows;
-    };
-
-    BayGrid bayGridFor (Bay bay)
-    {
-        switch (bay)
-        {
-            case Bay::limiter: return { limiterCols, 1 };
-            case Bay::release: return { releaseCols, releaseRows };
-            case Bay::output:  return { outputCols, 1 };
-        }
-
-        return { 1, 1 };
-    }
 
     struct KnobLayoutEntry
     {
         const char* parameterId;
-        const char* labelText;
-        Bay bay;
-        int col;
-        int row;
-        // Lookahead is prepare-time-latched (see ParameterIds.h::lookahead)
-        // - it gets a visually distinct "setup" treatment rather than
-        // reading as a live performance knob (design-brief note from the
-        // faceplate README).
-        bool isSetupParam;
+        const char* labelText; // accessible name only - no baked text labels
+        float cxMaster, cyMaster, rMaster; // true measured knob geometry (crop source) - layout-manifest.json "knobs"
+        float cx1x; // interactive slider hit-area X centre (Y is the shared knobRowY1x)
     };
 
-    // Signal-flow-grouped within each bay, matching ParameterLayout.cpp's
-    // own ordering: limiter bay = the level core (Input Gain, Ceiling, Clip
-    // Mix); release bay = all time-domain behaviour (Attack, Release, Auto
-    // Release, Lookahead) plus the Release Curve choice (see choiceLayout
-    // below - it shares the release bay's grid); output bay = detection
-    // linking (Stereo Link).
-    constexpr std::array<KnobLayoutEntry, 8> knobLayout {
-        KnobLayoutEntry { ParamIDs::inputGain, "Input Gain", Bay::limiter, 0, 0, false },
-        KnobLayoutEntry { ParamIDs::ceiling, "Ceiling", Bay::limiter, 1, 0, false },
-        KnobLayoutEntry { ParamIDs::clipMix, "Clip Mix", Bay::limiter, 2, 0, false },
-        KnobLayoutEntry { ParamIDs::attack, "Attack", Bay::release, 0, 0, false },
-        KnobLayoutEntry { ParamIDs::release, "Release", Bay::release, 1, 0, false },
-        KnobLayoutEntry { ParamIDs::autoRelease, "Auto Release", Bay::release, 2, 0, false },
-        KnobLayoutEntry { ParamIDs::lookahead, "Lookahead", Bay::release, 0, 1, true },
-        KnobLayoutEntry { ParamIDs::stereoLink, "Stereo Link", Bay::output, 0, 0, false },
+    // Mapping decided for this M3 GUI pass (docs/gui-mapping.md has the
+    // full rationale table): the 3 baked knob positions get Apotheosis's
+    // three headline continuous PERFORMANCE controls - Input Gain, Ceiling,
+    // Release, left to right, matching layout-manifest.json's own knob
+    // index order (1/2/3 = left-to-right).
+    constexpr std::array<KnobLayoutEntry, 3> knobLayout {
+        KnobLayoutEntry { ParamIDs::inputGain, "Input Gain", 698.0f, 545.0f, 57.0f, knobCentreX1x[0] },
+        KnobLayoutEntry { ParamIDs::ceiling, "Ceiling", 867.0f, 546.0f, 55.0f, knobCentreX1x[1] },
+        KnobLayoutEntry { ParamIDs::release, "Release", 1038.0f, 543.0f, 57.0f, knobCentreX1x[2] },
     };
 
-    struct ChoiceLayoutEntry
+    // Tube-bay glow breathing ballistics (SubtractiveGlow.h's
+    // stepGlowMix()) - driven from the processor's own gain-reduction
+    // reading. Idle (no gain reduction) breathes around
+    // tubeGlowIdleBreathCentre (0.75, +/-0.05), rising to the hard t=1.0
+    // ceiling (the base master, tubes at full glow) as the limiter engages
+    // more heavily - see docs/gui-mapping.md's "Tube bay behaviour"
+    // section and PluginEditorLayout.h's own tubeGlow* constant docs.
+    float tubeGlowInstantaneousDepthDb (float gainReductionDb) noexcept
     {
-        const char* parameterId;
-        const char* labelText;
-        Bay bay;
-        int col;
-        int row;
-    };
-
-    constexpr std::array<ChoiceLayoutEntry, 3> choiceLayout {
-        // Shares the release bay's 3x2 grid with the knobs above - sits at
-        // (col 1, row 1), next to Lookahead's (col 0, row 1); (col 2, row 1)
-        // is the grid's one deliberately unused cell (5 controls in a 6-cell
-        // grid), matching layout-manifest.json's release bay note.
-        ChoiceLayoutEntry { ParamIDs::releaseCurve, "Release Curve", Bay::release, 1, 1 },
-        // Output bay is a bespoke two-row layout, not the generic grid -
-        // col here means "left half" (0) / "right half" (1) of the bay's
-        // bottom row, handled as a special case in resized() - see
-        // PluginEditorLayout.h's outputCols docs.
-        ChoiceLayoutEntry { ParamIDs::dither, "Dither", Bay::output, 0, 0 },
-        ChoiceLayoutEntry { ParamIDs::ditherShape, "Dither Shape", Bay::output, 1, 0 },
-    };
+        // gainReductionDb is <= 0 (0 = no reduction, more negative = more
+        // reduction - see TruePeakLimiterEngine::getGainReductionDb()'s
+        // docs); stepGlowMix() wants a positive "depth" value increasing
+        // toward tubeGlowCeilingDb as the effect engages harder.
+        return juce::jmax (0.0f, -gainReductionDb);
+    }
 
     juce::Image loadImage (const char* data, int size)
     {
         return juce::ImageCache::getFromMemory (data, size);
     }
 
-    // M2 i18n frame (.scaffold/specs/preset-system-m2.md): selects German
-    // (resources/i18n/de.txt) or falls through to English, once, at editor
-    // construction - see Localisation.h's docs and silentium's
-    // PluginEditor.cpp for the full ordering rationale (member initialisers
-    // run in declaration order, so this helper - invoked from presetBar's
-    // own initialiser expression - is what guarantees installLocalisation()
-    // runs before presetBar exists).
+    // M2 i18n frame: selects German (resources/i18n/de.txt) or falls through
+    // to English, once, at editor construction - see Localisation.h's docs.
+    // `presetBar` is a member initialised via the constructor's initialiser
+    // list, and its own constructor already calls TRANS() on every button
+    // label - member initialisers run in declaration order regardless of the
+    // order they're written in, so this helper (called from presetBar's own
+    // initialiser expression below) is what actually guarantees
+    // installLocalisation() runs before presetBar exists.
     basilica::presets::PresetManager& initLocalisationThenGetPresetManager (ApotheosisAudioProcessor& processor)
     {
         basilica::presets::installLocalisation (BinaryData::de_txt, BinaryData::de_txtSize);
@@ -127,20 +72,13 @@ namespace
     }
 
     // Non-parameter, per-session UI state: the stepped scale choice (0/1/2)
-    // stored as a plain property directly on apvts.state - see silentium's
-    // PluginEditor.cpp for why this deliberately isn't a registered
-    // parameter.
+    // stored as a plain property directly on apvts.state.
     constexpr const char* uiScaleStepProperty = "uiScaleStep";
 
-    basilica::gui::AnalogMeter::Assets makeMeterAssets()
+    basilica::gui::HubNeedle::Assets loadNeedleAsset (const char* data, int size)
     {
-        basilica::gui::AnalogMeter::Assets assets;
-        assets.face1x = loadImage (BinaryData::vu_brass_face_480x270_png, BinaryData::vu_brass_face_480x270_pngSize);
-        assets.face2x = loadImage (BinaryData::vu_brass_face_960x540_png, BinaryData::vu_brass_face_960x540_pngSize);
-        assets.needle1x = loadImage (BinaryData::vu_brass_needle_480x270_png, BinaryData::vu_brass_needle_480x270_pngSize);
-        assets.needle2x = loadImage (BinaryData::vu_brass_needle_960x540_png, BinaryData::vu_brass_needle_960x540_pngSize);
-        assets.glass1x = loadImage (BinaryData::vu_brass_glass_480x270_png, BinaryData::vu_brass_glass_480x270_pngSize);
-        assets.glass2x = loadImage (BinaryData::vu_brass_glass_960x540_png, BinaryData::vu_brass_glass_960x540_pngSize);
+        basilica::gui::HubNeedle::Assets assets;
+        assets.needleSprite = loadImage (data, size);
         return assets;
     }
 }
@@ -148,60 +86,67 @@ namespace
 ApotheosisAudioProcessorEditor::ApotheosisAudioProcessorEditor (ApotheosisAudioProcessor& processorToEdit)
     : juce::AudioProcessorEditor (&processorToEdit),
       audioProcessor (processorToEdit),
-      presetBar (initLocalisationThenGetPresetManager (processorToEdit)),
-      gainReductionMeter (makeMeterAssets(), "Gain Reduction meter"),
-      truePeakMeter (makeMeterAssets(), "True Peak meter"),
-      lufsMeter (makeMeterAssets(), "LUFS meter")
+      presetBar (initLocalisationThenGetPresetManager (processorToEdit))
 {
-    setLookAndFeel (&lookAndFeel);
+    masterImage = loadImage (BinaryData::master_victorian_png, BinaryData::master_victorian_pngSize);
 
-    facePlateImage1x = loadImage (BinaryData::faceplate_apotheosis_900x600_png, BinaryData::faceplate_apotheosis_900x600_pngSize);
-    facePlateImage2x = loadImage (BinaryData::faceplate_apotheosis_1800x1200_png, BinaryData::faceplate_apotheosis_1800x1200_pngSize);
-    brandIconImage = loadImage (BinaryData::icon256_png, BinaryData::icon256_pngSize);
-
-    // Creation order below doubles as the accessibility/keyboard focus
-    // order (JUCE's default FocusTraverser walks children in z-order, i.e.
-    // creation order) - kept matching the visual reading order:
-    // header/scale control, preset bar, meters (GR / True Peak / LUFS),
-    // then the three knob bays left-to-right, top-to-bottom within each.
-    titleLabel.setText ("Apotheosis", juce::dontSendNotification);
-    titleLabel.setJustificationType (juce::Justification::centredLeft);
-    titleLabel.setFont (juce::Font (juce::FontOptions {}
-                                        .withName (juce::Font::getDefaultSerifFontName())
-                                        .withHeight (26.0f)
-                                        .withStyle ("Bold")));
-    titleLabel.setInterceptsMouseClicks (false, false);
-    addAndMakeVisible (titleLabel);
-
+    // Creation order doubles as the accessibility/keyboard focus order
+    // (JUCE's default FocusTraverser walks children in z-order, i.e.
+    // creation order) - kept matching visual reading order: preset bar +
+    // scale control, the grand GR needle, the 3 small needles top-to-
+    // bottom, then the knob row left-to-right.
     addAndMakeVisible (presetBar);
 
-    // A11y: an explicitly-set AccessibilityHandler title always wins over a
-    // button's own text for screen readers (see silentium's
-    // applyScaleStep() docs), so the title is re-set on every scale change,
-    // not just at construction.
     scaleButton.setComponentID ("scaleButton");
     scaleButton.onClick = [this] { cycleScale(); };
     addAndMakeVisible (scaleButton);
 
-    addAndMakeVisible (gainReductionMeter);
-    addAndMakeVisible (truePeakMeter);
-    addAndMakeVisible (lufsMeter);
+    gainReductionNeedle = std::make_unique<basilica::gui::HubNeedle> (
+        loadNeedleAsset (BinaryData::needle_mainVU_victorian_png, BinaryData::needle_mainVU_victorian_pngSize),
+        "Gain Reduction meter",
+        mainVUNeedle1x.spriteSizeFraction, mainVUNeedle1x.spriteSizeFraction, mainVUNeedle1x.spriteSizeFraction,
+        mainVUNeedle1x.bakedAngleDeg,
+        grRestDb, grFullScaleReductionDb, grRestAngleDeg, grFullScaleAngleDeg);
+    addAndMakeVisible (*gainReductionNeedle);
 
-    const auto knobStrip1x = loadImage (BinaryData::knob_brass_strip_160px_128f_png, BinaryData::knob_brass_strip_160px_128f_pngSize);
-    const auto knobStrip2x = loadImage (BinaryData::knob_brass_strip_320px_128f_png, BinaryData::knob_brass_strip_320px_128f_pngSize);
+    inputLevelNeedle = std::make_unique<basilica::gui::HubNeedle> (
+        loadNeedleAsset (BinaryData::needle_smallMeterTop_victorian_png, BinaryData::needle_smallMeterTop_victorian_pngSize),
+        "Input Level meter",
+        smallMeterTopNeedle1x.spriteSizeFraction, smallMeterTopNeedle1x.spriteSizeFraction, smallMeterTopNeedle1x.spriteSizeFraction,
+        smallMeterTopNeedle1x.bakedAngleDeg,
+        vuRestDb, vuFullScaleDb, smallMeterRestAngleDeg, smallMeterFullScaleAngleDeg);
+    addAndMakeVisible (*inputLevelNeedle);
+
+    outputLevelNeedle = std::make_unique<basilica::gui::HubNeedle> (
+        loadNeedleAsset (BinaryData::needle_smallMeterMid_victorian_png, BinaryData::needle_smallMeterMid_victorian_pngSize),
+        "Output Level meter",
+        smallMeterMidNeedle1x.spriteSizeFraction, smallMeterMidNeedle1x.spriteSizeFraction, smallMeterMidNeedle1x.spriteSizeFraction,
+        smallMeterMidNeedle1x.bakedAngleDeg,
+        vuRestDb, vuFullScaleDb, smallMeterRestAngleDeg, smallMeterFullScaleAngleDeg);
+    addAndMakeVisible (*outputLevelNeedle);
+
+    truePeakMarginNeedle = std::make_unique<basilica::gui::HubNeedle> (
+        loadNeedleAsset (BinaryData::needle_smallMeterBottom_victorian_png, BinaryData::needle_smallMeterBottom_victorian_pngSize),
+        "True Peak Margin meter",
+        smallMeterBottomNeedle1x.spriteSizeFraction, smallMeterBottomNeedle1x.spriteSizeFraction, smallMeterBottomNeedle1x.spriteSizeFraction,
+        smallMeterBottomNeedle1x.bakedAngleDeg,
+        marginRestDb, marginFullScaleDb, smallMeterRestAngleDeg, smallMeterFullScaleAngleDeg);
+    addAndMakeVisible (*truePeakMarginNeedle);
 
     for (size_t i = 0; i < knobLayout.size(); ++i)
     {
         auto& entry = knobLayout[i];
-        knobs[i].slider = std::make_unique<basilica::gui::FilmstripKnob> (knobStrip1x, knobStrip2x, 128);
-        configureKnob (knobs[i], entry.parameterId, entry.labelText, entry.isSetupParam);
+        knobs[i].slider = std::make_unique<basilica::gui::MasterCropKnob> (
+            masterImage, juce::Point<float> (entry.cxMaster, entry.cyMaster), entry.rMaster);
+        configureKnob (knobs[i], entry.parameterId, entry.labelText);
     }
 
-    for (size_t i = 0; i < choiceLayout.size(); ++i)
-    {
-        auto& entry = choiceLayout[i];
-        configureChoice (choices[i], entry.parameterId, entry.labelText);
-    }
+    auto glowImage = loadImage (BinaryData::tube_glow_victorian_png, BinaryData::tube_glow_victorian_pngSize);
+    tubeGlow = basilica::gui::SubtractiveGlow (
+        masterImage, glowImage,
+        { tubeBayZoneMasterPx.getX(), tubeBayZoneMasterPx.getY() }, 1.0f);
+    tubeGlowState.startTimeSeconds = juce::Time::getMillisecondCounterHiRes() / 1000.0;
+    tubeGlowMix = tubeGlowIdleBreathCentre;
 
     setResizable (false, false);
 
@@ -211,28 +156,13 @@ ApotheosisAudioProcessorEditor::ApotheosisAudioProcessorEditor (ApotheosisAudioP
     startTimerHz (30);
 }
 
-ApotheosisAudioProcessorEditor::~ApotheosisAudioProcessorEditor()
-{
-    setLookAndFeel (nullptr);
-}
+ApotheosisAudioProcessorEditor::~ApotheosisAudioProcessorEditor() = default;
 
-void ApotheosisAudioProcessorEditor::configureKnob (Knob& knob, const juce::String& parameterId, const juce::String& labelText, bool isSetupParam)
+void ApotheosisAudioProcessorEditor::configureKnob (Knob& knob, const juce::String& parameterId, const juce::String& labelText)
 {
     knob.slider->setPopupDisplayEnabled (true, true, this);
-
-    // Setup-parameter treatment (Lookahead): the accessible name/label text
-    // itself flags the "(Setup)" distinction so AT users get the same
-    // information the dashed amber frame communicates visually (see
-    // paint()'s docs), and the description spells out WHY (prepare-time
-    // latched, not live) rather than leaving it to be inferred from the
-    // suffix alone.
-    const auto displayText = isSetupParam ? labelText + " (Setup)" : labelText;
-    knob.slider->setTitle (displayText);
-    knob.slider->setName (displayText);
-
-    if (isSetupParam)
-        knob.slider->setDescription ("Prepare-time parameter: sizes the limiter's internal buffers and changes the plugin's reported latency. Changes take effect at the next audio engine restart, not live during playback.");
-
+    knob.slider->setTitle (labelText);
+    knob.slider->setName (labelText);
     addAndMakeVisible (*knob.slider);
 
     if (auto* param = audioProcessor.apvts.getParameter (parameterId))
@@ -241,72 +171,20 @@ void ApotheosisAudioProcessorEditor::configureKnob (Knob& knob, const juce::Stri
         knob.slider->setDoubleClickReturnValue (true, defaultValue);
     }
 
-    knob.label.setText (displayText, juce::dontSendNotification);
-    knob.label.setJustificationType (juce::Justification::centred);
-    knob.label.setInterceptsMouseClicks (false, false);
-    addAndMakeVisible (knob.label);
-
     // SliderAttachment MUST be constructed before the textFromValueFunction
-    // override below, not after: JUCE 8.0.14's SliderParameterAttachment
-    // constructor (juce_ParameterAttachments.cpp:128) itself assigns
-    // `slider.textFromValueFunction` as part of wiring the attachment -
-    // setting our own function BEFORE this point would be silently
-    // clobbered the moment the attachment is created (see silentium's
-    // PluginEditor.cpp, the documented JUCE 8.0.14 ordering bug).
+    // override below - JUCE 8.0.14's SliderParameterAttachment constructor
+    // itself assigns slider.textFromValueFunction as part of wiring the
+    // attachment, which would silently clobber an override set beforehand.
     knob.attachment = std::make_unique<SliderAttachment> (audioProcessor.apvts, parameterId, *knob.slider);
 
     if (auto* param = audioProcessor.apvts.getParameter (parameterId))
     {
-        // Every parameter declares its unit via .withLabel() in
-        // ParameterLayout.cpp (dB/ms/%), but SliderAttachment's own
-        // textFromValueFunction drops it - this feeds both the popup value
-        // display and the accessibility value string (juce_Slider.cpp's
-        // SliderAccessibilityHandler::ValueInterface::getCurrentValueAsString()
-        // calls Slider::getTextFromValue(), which calls this same
-        // function). Still uses the parameter's own getText() so the
-        // reported precision/rounding matches what the host itself would
-        // display.
         knob.slider->textFromValueFunction = [param] (double v)
         {
             return param->getText (param->convertTo0to1 ((float) v), 0) + " " + param->getLabel();
         };
         knob.slider->updateText();
     }
-}
-
-void ApotheosisAudioProcessorEditor::configureChoice (Choice& choice, const juce::String& parameterId, const juce::String& labelText)
-{
-    // Dark-stone/gold colour pair reused directly from
-    // BasilicaLookAndFeel's own WCAG-AA-verified caption pair
-    // (BasilicaLookAndFeelContrastTests.cpp asserts it clears 4.5:1) rather
-    // than a second hand-picked colour that could silently drift out of
-    // sync - see that test file's docs.
-    const auto textColour = basilica::gui::BasilicaLookAndFeel::getLabelTextColour();
-    const auto backingColour = basilica::gui::BasilicaLookAndFeel::getLabelBackingChipColour();
-
-    choice.box.setColour (juce::ComboBox::backgroundColourId, backingColour);
-    choice.box.setColour (juce::ComboBox::textColourId, textColour);
-    choice.box.setColour (juce::ComboBox::outlineColourId, textColour.withAlpha (0.6f));
-    choice.box.setColour (juce::ComboBox::arrowColourId, textColour);
-    choice.box.setTitle (labelText);
-    addAndMakeVisible (choice.box);
-
-    // ComboBoxAttachment does not populate the box itself (see its JUCE doc
-    // comment); pull the choice strings straight from the live APVTS
-    // parameter (AudioParameterChoice::getAllValueStrings() returns its
-    // `choices` array) rather than duplicating the string list here, so the
-    // GUI can never drift out of sync with ParameterLayout.cpp. Item IDs are
-    // 1-based to match ComboBox's convention; ComboBoxAttachment maps them
-    // back to the parameter's 0-based choice index.
-    if (auto* parameter = audioProcessor.apvts.getParameter (parameterId))
-        choice.box.addItemList (parameter->getAllValueStrings(), 1);
-
-    choice.label.setText (labelText, juce::dontSendNotification);
-    choice.label.setJustificationType (juce::Justification::centred);
-    choice.label.setInterceptsMouseClicks (false, false);
-    addAndMakeVisible (choice.label);
-
-    choice.attachment = std::make_unique<ComboBoxAttachment> (audioProcessor.apvts, parameterId, choice.box);
 }
 
 void ApotheosisAudioProcessorEditor::cycleScale()
@@ -324,6 +202,7 @@ void ApotheosisAudioProcessorEditor::applyScaleStep (int newStepIndex)
     scaleButton.setTitle ("Window scale, " + percentText);
 
     const auto scale = scaleSteps[(size_t) scaleStepIndex];
+
     setSize ((int) std::lround ((float) baseEditorWidth * scale),
              (int) std::lround ((float) baseEditorHeight * scale));
 }
@@ -333,39 +212,54 @@ void ApotheosisAudioProcessorEditor::paint (juce::Graphics& g)
     g.fillAll (juce::Colours::black);
 
     const auto scale = scaleSteps[(size_t) scaleStepIndex];
-    const auto plateBounds = juce::Rectangle<float> (0.0f, (float) topStripHeight1x * scale + (float) topStripGap1x * scale,
+    const auto s = [scale] (float v) { return v * scale; };
+
+    const auto stripHeight = (float) topStripHeight1x * scale;
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff17141a), 0.0f, 0.0f,
+                                             juce::Colour (0xff0b090d), 0.0f, stripHeight, false));
+    g.fillRect (juce::Rectangle<float> (0.0f, 0.0f, (float) getWidth(), stripHeight));
+    g.setColour (juce::Colour (0xff5a4420));
+    g.fillRect (juce::Rectangle<float> (0.0f, stripHeight - 1.0f * scale, (float) getWidth(), 1.0f * scale));
+
+    const auto plateOrigin = juce::Point<float> (0.0f, stripHeight + (float) topStripGap1x * scale);
+    const auto plateBounds = juce::Rectangle<float> (plateOrigin.x, plateOrigin.y,
                                                       (float) plateWidth1x * scale, (float) plateHeight1x * scale);
 
-    const auto& plateImage = basilica::gui::pickImageForWidth (facePlateImage1x, facePlateImage2x,
-                                                               plateWidth1x, (int) plateBounds.getWidth());
-    if (plateImage.isValid())
-        g.drawImage (plateImage, plateBounds);
-
-    if (brandIconImage.isValid())
+    const auto toScreenRect = [&] (juce::Rectangle<int> local1x)
     {
-        const auto d = (float) roundelRadius1x * 1.7f * scale;
-        const auto cx = (float) roundelCentre1x.x * scale;
-        const auto cy = plateBounds.getY() + (float) roundelCentre1x.y * scale;
-        g.drawImage (brandIconImage, juce::Rectangle<float> (d, d).withCentre ({ cx, cy }));
+        return juce::Rectangle<float> (plateOrigin.x + s ((float) local1x.getX()),
+                                       plateOrigin.y + s ((float) local1x.getY()),
+                                       s ((float) local1x.getWidth()),
+                                       s ((float) local1x.getHeight()));
+    };
+
+    g.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
+
+    // 1. Baseline plate: the single master render, filling the plate bounds.
+    // Bakes the oak frame, brass plate, empty grand GR dial (tick arc + red
+    // zone), 3 empty small dials, tube bay at full glow, and all 3 knobs at
+    // 12 o'clock - nothing else is drawn for any of those elements.
+    if (masterImage.isValid())
+        g.drawImage (masterImage, plateBounds, juce::RectanglePlacement::centred, false);
+
+    // (2. The 3 knobs are separate MasterCropKnob child components, drawn
+    // automatically after this method returns - see resized() for their
+    // bounds and MasterCropKnob.cpp for the rotating-crop draw itself.)
+
+    // 3. Tube-bay glow layer (SUBTRACTIVE, see SubtractiveGlow.h) - a single
+    // cross-blend of the whole glow-sprite footprint, ballistically driven
+    // by updateTubeGlowMix() (called from timerCallback()) or directly by
+    // the test/preview hooks below.
+    {
+        const auto destRect = toScreenRect (tubeBayZone1x);
+        tubeGlow.drawZone (g, destRect, tubeGlowMix);
     }
 
-    // Lookahead "setup" parameter frame: a dashed amber outline distinct
-    // from the plate's own engraved gold - communicates "this control
-    // behaves differently" (prepare-time-latched, not live) at a glance,
-    // independent of reading its label text. See PluginEditor.h's
-    // lookaheadSetupFrameBounds docs.
-    if (! lookaheadSetupFrameBounds.isEmpty())
-    {
-        juce::Path frame;
-        frame.addRoundedRectangle (lookaheadSetupFrameBounds.toFloat(), 6.0f);
-
-        juce::Path dashed;
-        const float dashLengths[] = { 5.0f, 3.5f };
-        juce::PathStrokeType (1.6f).createDashedStroke (dashed, frame, dashLengths, 2);
-
-        g.setColour (juce::Colour (0xffc99a3e));
-        g.fillPath (dashed);
-    }
+    // (The 4 needles are separate HubNeedle child components, drawn after
+    // this method returns - see resized() for their bounds. Everything
+    // else - oak frame, brass plate engraving, honeycomb mesh, every dial
+    // face/tick arc/red zone, the knobs' own baked outer rim - stays BAKED
+    // in the master, no draw calls for any of it.)
 }
 
 void ApotheosisAudioProcessorEditor::resized()
@@ -376,145 +270,110 @@ void ApotheosisAudioProcessorEditor::resized()
     auto bounds = getLocalBounds();
     auto topStrip = bounds.removeFromTop (s (topStripHeight1x));
 
-    scaleButton.setBounds (topStrip.removeFromRight (s (scaleButtonWidth1x)));
-    presetBar.setBounds (topStrip);
+    scaleButton.setBounds (topStrip.removeFromRight (s (scaleButtonWidth1x)).reduced (0, s (2)));
+    presetBar.setBounds (topStrip.reduced (0, s (2)));
 
     // Everything below is expressed in plate-local coordinates (the base
-    // @1x table above), then offset by the top strip + gap and scaled.
-    const auto toPlateRect = [&] (juce::Rectangle<int> plateLocal)
+    // @1x table in PluginEditorLayout.h), then offset by the top strip +
+    // gap and scaled.
+    const auto toPlatePoint = [&] (juce::Point<int> plateLocal)
     {
-        return juce::Rectangle<int> (s (plateLocal.getX()),
-                                     s (topStripHeight1x + topStripGap1x) + s (plateLocal.getY()),
-                                     s (plateLocal.getWidth()),
-                                     s (plateLocal.getHeight()));
+        return juce::Point<int> (s (plateLocal.x),
+                                 s (topStripHeight1x + topStripGap1x) + s (plateLocal.y));
     };
 
-    titleLabel.setBounds (toPlateRect (headerBay1x.withWidth (roundelCentre1x.x - headerBay1x.getX() - roundelRadius1x - 8)));
-
-    // The VU layers' dial content only occupies the central half of their
-    // canvas (see AnalogMeter::contentFractionOfCanvas) - expand each
-    // meter's bounds around its column's centre so the VISIBLE dial fills
-    // the engraved bay. The overhang is fully transparent and
-    // mouse-transparent.
-    const auto expandMeterBounds = [] (juce::Rectangle<int> bay)
+    const auto placeNeedle = [&] (basilica::gui::HubNeedle& needle, const NeedleGeometry1x& geom)
     {
-        const auto factor = 1.0f / basilica::gui::AnalogMeter::contentFractionOfCanvas;
-        return bay.withSizeKeepingCentre ((int) std::lround ((float) bay.getWidth() * factor),
-                                          (int) std::lround ((float) bay.getHeight() * factor));
+        const auto topLeftScreen = toPlatePoint (geom.topLeft1x);
+        const auto size = s (geom.componentSize1x);
+        needle.setBounds (topLeftScreen.x, topLeftScreen.y, size, size);
     };
 
-    const auto metersBay = toPlateRect (metersBay1x);
-    const auto meterColW = metersBay.getWidth() / numMeters;
-
-    basilica::gui::AnalogMeter* meters[numMeters] = { &gainReductionMeter, &truePeakMeter, &lufsMeter };
-
-    for (int i = 0; i < numMeters; ++i)
-    {
-        const auto colX = metersBay.getX() + i * meterColW;
-        const juce::Rectangle<int> column (colX, metersBay.getY(), meterColW, metersBay.getHeight());
-        meters[(size_t) i]->setBounds (expandMeterBounds (column));
-    }
-
-    const auto knobDiam = s (knobDiameter1x);
-    const auto labelH = s (knobLabelHeight1x);
-    const auto choiceBoxH = s (choiceBoxHeight1x);
-
-    // Output bay row split (see PluginEditorLayout.h's outputCols docs):
-    // row 0 (top) = Stereo Link's full-width knob; row 1 (bottom) =
-    // Dither/Dither Shape's two half-width combo boxes. Computed once here,
-    // shared by both loops below via the `entry.bay == Bay::output` special
-    // case, so the knob row and the combo row can never disagree about
-    // where the split actually is.
-    const auto outputBayRect = toPlateRect (outputBay1x);
-    const auto outputKnobRowH = labelH + knobDiam + s (8);
+    placeNeedle (*gainReductionNeedle, mainVUNeedle1x);
+    placeNeedle (*inputLevelNeedle, smallMeterTopNeedle1x);
+    placeNeedle (*outputLevelNeedle, smallMeterMidNeedle1x);
+    placeNeedle (*truePeakMarginNeedle, smallMeterBottomNeedle1x);
 
     for (size_t i = 0; i < knobLayout.size(); ++i)
     {
-        const auto& entry = knobLayout[i];
+        auto& entry = knobLayout[i];
+        const auto diameter = s (knobDiameter1x);
 
-        juce::Rectangle<int> cell;
-
-        if (entry.bay == Bay::output)
-        {
-            cell = { outputBayRect.getX(), outputBayRect.getY(), outputBayRect.getWidth(), outputKnobRowH };
-        }
-        else
-        {
-            const auto bayRect = toPlateRect (bayRectFor (entry.bay));
-            const auto grid = bayGridFor (entry.bay);
-            const auto cellW = bayRect.getWidth() / grid.cols;
-            const auto cellH = bayRect.getHeight() / grid.rows;
-            cell = { bayRect.getX() + entry.col * cellW, bayRect.getY() + entry.row * cellH, cellW, cellH };
-        }
-
-        knobs[i].label.setBounds (cell.getX(), cell.getY(), cell.getWidth(), labelH);
-        knobs[i].slider->setBounds (juce::Rectangle<int> (knobDiam, knobDiam)
-                                        .withCentre ({ cell.getCentreX(), cell.getY() + labelH + (cell.getHeight() - labelH) / 2 }));
-
-        if (entry.isSetupParam)
-            lookaheadSetupFrameBounds = cell.reduced (s (4));
+        knobs[i].slider->setBounds (juce::Rectangle<int> (diameter, diameter)
+                                        .withCentre (toPlatePoint ({ (int) std::lround (entry.cx1x), knobRowY1x })));
     }
 
-    for (size_t i = 0; i < choiceLayout.size(); ++i)
+    // Tube-glow repaint region: recomputed here so timerCallback()'s
+    // per-tick repaint() call only invalidates this area rather than the
+    // whole plate.
+    const auto toPlateRect = [&] (juce::Rectangle<int> local1x)
     {
-        const auto& entry = choiceLayout[i];
+        return juce::Rectangle<int> (toPlatePoint (local1x.getPosition()), toPlatePoint (local1x.getBottomRight()));
+    };
 
-        juce::Rectangle<int> cell;
+    tubeGlowRepaintBounds = toPlateRect (tubeBayZone1x).expanded (s (4));
+}
 
-        if (entry.bay == Bay::output)
-        {
-            const auto comboRowY = outputBayRect.getY() + outputKnobRowH;
-            const auto comboRowH = outputBayRect.getBottom() - comboRowY;
-            const auto halfW = outputBayRect.getWidth() / 2;
-            cell = { outputBayRect.getX() + entry.col * halfW, comboRowY, halfW, comboRowH };
-        }
-        else
-        {
-            const auto bayRect = toPlateRect (bayRectFor (entry.bay));
-            const auto grid = bayGridFor (entry.bay);
-            const auto cellW = bayRect.getWidth() / grid.cols;
-            const auto cellH = bayRect.getHeight() / grid.rows;
-            cell = { bayRect.getX() + entry.col * cellW, bayRect.getY() + entry.row * cellH, cellW, cellH };
-        }
+void ApotheosisAudioProcessorEditor::updateTubeGlowMix() noexcept
+{
+    const auto now = juce::Time::getMillisecondCounterHiRes() / 1000.0;
+    constexpr float dt = 1.0f / 30.0f;
 
-        choices[i].label.setBounds (cell.getX(), cell.getY(), cell.getWidth(), labelH);
-        choices[i].box.setBounds (juce::Rectangle<int> (cell.getWidth() - s (10), choiceBoxH)
-                                      .withCentre ({ cell.getCentreX(), cell.getY() + labelH + (cell.getHeight() - labelH) / 2 }));
-    }
+    tubeGlowMix = basilica::gui::stepGlowMix (
+        tubeGlowState, tubeGlowInstantaneousDepthDb (audioProcessor.getGainReductionDb()), dt, now,
+        tubeGlowTauSeconds, tubeGlowFloorDb, tubeGlowCeilingDb,
+        tubeGlowIdleBreathCentre, tubeGlowIdleBreathHalfRange, tubeGlowPhaseSeed);
 }
 
 void ApotheosisAudioProcessorEditor::timerCallback()
 {
-    // Gain Reduction: TruePeakLimiterEngine publishes this already as
-    // gainToDecibels(minGainAppliedThisBlock) - i.e. <= 0 dB, 0 = no
-    // reduction, more negative = more reduction (see
-    // TruePeakLimiterEngine.cpp's processChunk()). The shared VU face's
-    // baked tick table (AnalogMeter.cpp, copied verbatim from
-    // render_vu_meter.py) is a generic 0-centred dial: 0 dB sits
-    // straight-up/"rest", negative values sweep left, positive sweep
-    // right. Feeding this value directly therefore reads exactly as a
-    // "gain reduction downward from rest" meter - the needle sits at rest
-    // with no reduction and swings away (left) as reduction increases -
-    // using the suite's one generic VU face rather than a bespoke
-    // GR-specific dial asset, per the M3 briefing's explicit allowance
-    // ("the VU face asset is generic; needle mapping per meter documented
-    // in code").
-    gainReductionMeter.setTargetDb (audioProcessor.getGainReductionDb());
+    // Grand meter - GAIN REDUCTION. The engine's own reading is already
+    // <=0 dB (0 = no reduction), matching HubNeedle's own restValue/
+    // fullScaleValue calibration directly (see PluginEditorLayout.h's
+    // grRestDb/grFullScaleReductionDb docs) - no conversion needed here.
+    gainReductionNeedle->setTargetDb (audioProcessor.getGainReductionDb());
 
-    // True Peak: the engine's own dBTP readout, on the same 0-centred
-    // scale - a well-behaved limiter output sits at/below the Ceiling
-    // parameter (default -1 dBTP), comfortably inside the tick table's
-    // -20..+3 dB span.
-    truePeakMeter.setTargetDb (audioProcessor.getOutputTruePeakDb());
+    // Small meters top/mid - INPUT/OUTPUT level, Standard-A suite VU
+    // convention (0 VU = -18 dBFS - PluginEditorLayout.h's
+    // vuZeroReferenceDbfs).
+    inputLevelNeedle->setTargetDb (audioProcessor.getInputLevelDb() - vuZeroReferenceDbfs);
+    outputLevelNeedle->setTargetDb (audioProcessor.getOutputLevelDb() - vuZeroReferenceDbfs);
 
-    // LUFS: Momentary (400 ms integration, the engine's fastest/most
-    // "VU-like" loudness readout - see TruePeakLimiterEngine's class docs)
-    // rather than Short-Term (3 s) or Integrated (whole-programme average),
-    // which would read as near-static on a physically-styled needle meter.
-    // Typical mastering targets (roughly -14 to -9 LUFS streaming/loud) sit
-    // within the same generic tick table's range; quieter material simply
-    // pins toward the table's -20 dB floor, an accepted limitation of
-    // reusing one generic VU face across three different metrics (see this
-    // function's top-of-file docs).
-    lufsMeter.setTargetDb (audioProcessor.getMomentaryLufs());
+    // Small meter bottom - TRUE-PEAK MARGIN: how much headroom remains
+    // between the current Ceiling and the engine's own oversampled
+    // true-peak reading (getOutputTruePeakDb() - see that getter's own
+    // docs for why this is the right measurement for a MARGIN reading,
+    // distinct from the level meters above).
+    if (auto* ceilingParam = audioProcessor.apvts.getParameter (ParamIDs::ceiling))
+    {
+        const auto ceilingDb = ceilingParam->getNormalisableRange().convertFrom0to1 (ceilingParam->getValue());
+        truePeakMarginNeedle->setTargetDb (ceilingDb - audioProcessor.getOutputTruePeakDb());
+    }
+
+    gainReductionNeedle->tick (1.0f / 30.0f);
+    inputLevelNeedle->tick (1.0f / 30.0f);
+    outputLevelNeedle->tick (1.0f / 30.0f);
+    truePeakMarginNeedle->tick (1.0f / 30.0f);
+
+    updateTubeGlowMix();
+    repaint (tubeGlowRepaintBounds);
+}
+
+void ApotheosisAudioProcessorEditor::recomputeTubeGlowForPreview() noexcept
+{
+    updateTubeGlowMix();
+    repaint (tubeGlowRepaintBounds);
+}
+
+void ApotheosisAudioProcessorEditor::setTubeGlowElapsedSecondsForPreview (double elapsedSeconds) noexcept
+{
+    tubeGlowState.startTimeSeconds = juce::Time::getMillisecondCounterHiRes() / 1000.0 - elapsedSeconds;
+    updateTubeGlowMix();
+    repaint (tubeGlowRepaintBounds);
+}
+
+void ApotheosisAudioProcessorEditor::setTubeGlowMixForPreview (float t) noexcept
+{
+    tubeGlowMix = juce::jlimit (0.0f, 1.0f, t);
+    repaint (tubeGlowRepaintBounds);
 }

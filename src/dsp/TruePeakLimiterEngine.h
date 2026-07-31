@@ -156,6 +156,19 @@ public:
     float getShortTermLufs() const noexcept { return shortTermLufsAtomic.load (std::memory_order_relaxed); }
     float getIntegratedLufs() const noexcept { return integratedLufsAtomic.load (std::memory_order_relaxed); }
 
+    // M3 photoreal GUI (victorian design) additions: the small INPUT/OUTPUT
+    // meters need a plain dBFS PEAK reading (Standard-A suite convention,
+    // 0 VU = -18 dBFS - see PluginEditorLayout.h), distinct from
+    // getOutputTruePeakDb() above (which is an OVERSAMPLED true-peak
+    // measurement of the post-limiter, PRE-dither signal, used for the
+    // separate true-peak-margin meter). Input is measured post-input-gain,
+    // pre-limiting, at the BASE sample rate (what is actually being fed
+    // into the detector); Output is measured post-dither, at the base
+    // rate (the actual final output signal) - see processChunk() for
+    // exactly where each is sampled.
+    float getInputLevelDb() const noexcept { return inputLevelDbAtomic.load (std::memory_order_relaxed); }
+    float getOutputLevelDb() const noexcept { return outputLevelDbAtomic.load (std::memory_order_relaxed); }
+
 private:
     static constexpr int oversamplingFactorPow2 = 2; // 2^2 = 4x oversampling
     static constexpr int oversamplingFactor = 1 << oversamplingFactorPow2;
@@ -348,6 +361,8 @@ private:
     std::atomic<float> momentaryLufsAtomic { -100.0f };
     std::atomic<float> shortTermLufsAtomic { -100.0f };
     std::atomic<float> integratedLufsAtomic { -100.0f };
+    std::atomic<float> inputLevelDbAtomic { -100.0f };
+    std::atomic<float> outputLevelDbAtomic { -100.0f };
 
     // ITU-R BS.1770-4 K-weighting pre-filter: stage 1 (high shelf) then
     // stage 2 (high pass), applied per channel at the BASE sample rate

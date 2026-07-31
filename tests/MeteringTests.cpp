@@ -32,6 +32,96 @@ TEST_CASE ("Meters start at their documented idle defaults before any block is p
     CHECK (engine.getMomentaryLufs() == -100.0f);
     CHECK (engine.getShortTermLufs() == -100.0f);
     CHECK (engine.getIntegratedLufs() == -100.0f);
+    CHECK (engine.getInputLevelDb() == -100.0f);
+    CHECK (engine.getOutputLevelDb() == -100.0f);
+}
+
+// M3 photoreal GUI (victorian design) small-meter readouts - see
+// TruePeakLimiterEngine::getInputLevelDb()/getOutputLevelDb() docs.
+TEST_CASE ("Input level meter reads the post-input-gain peak, independent of limiting", "[metering]")
+{
+    ApotheosisAudioProcessor processor;
+    processor.prepareToPlay (48000.0, 1024);
+
+    setParam (processor, ParamIDs::inputGain, 6.0f); // +6 dB trim
+    setParam (processor, ParamIDs::ceiling, -1.0f);
+
+    juce::AudioBuffer<float> buffer (2, 1024);
+    TestHelpers::fillWithSine (buffer, 48000.0, 1000.0, 0.1f); // -20 dBFS raw
+
+    juce::MidiBuffer midi;
+    processor.processBlock (buffer, midi);
+
+    // Post +6 dB input trim, a -20 dBFS sine should read close to -14 dBFS
+    // at the input meter, regardless of how much the limiter subsequently
+    // reduces it (this is a peak reading a few ms after the input gain
+    // smoothing ramp, not an instantaneous transform - generous margin).
+    CHECK (processor.getInputLevelDb() > -18.0f);
+    CHECK (processor.getInputLevelDb() < -10.0f);
+}
+
+TEST_CASE ("Output level meter never exceeds the Ceiling, even when the input level does", "[metering]")
+{
+    ApotheosisAudioProcessor processor;
+    processor.prepareToPlay (48000.0, 1024);
+
+    setParam (processor, ParamIDs::ceiling, -3.0f);
+    setParam (processor, ParamIDs::release, 5.0f);
+
+    juce::AudioBuffer<float> buffer (2, 1024);
+    juce::MidiBuffer midi;
+
+    // Several blocks of a hot signal so the limiter is fully engaged and
+    // the (smoothed) input-gain ramp has settled.
+    for (int i = 0; i < 8; ++i)
+    {
+        TestHelpers::fillWithSine (buffer, 48000.0, 1000.0, 0.9f, static_cast<juce::int64> (i) * 1024); // -0.9 dBFS raw
+        processor.processBlock (buffer, midi);
+    }
+
+    CHECK (processor.getInputLevelDb() > -3.0f); // input is hot, well above the ceiling
+    CHECK (processor.getOutputLevelDb() <= -3.0f + 0.2f); // output stays at/under the ceiling (small margin for dither/interpolation)
+}
+
+TEST_CASE ("Input/output level meters reset to the idle floor on reset()", "[metering][robustness]")
+{
+    ApotheosisAudioProcessor processor;
+    processor.prepareToPlay (48000.0, 1024);
+
+    juce::AudioBuffer<float> buffer (2, 1024);
+    TestHelpers::fillWithSine (buffer, 48000.0, 1000.0, 0.5f);
+
+    juce::MidiBuffer midi;
+    processor.processBlock (buffer, midi);
+
+    REQUIRE (processor.getInputLevelDb() > -100.0f);
+    REQUIRE (processor.getOutputLevelDb() > -100.0f);
+
+    processor.reset();
+
+    CHECK (processor.getInputLevelDb() == -100.0f);
+    CHECK (processor.getOutputLevelDb() == -100.0f);
+}
+
+TEST_CASE ("Input/output level meters do not update on a zero-sample block", "[metering][robustness]")
+{
+    ApotheosisAudioProcessor processor;
+    processor.prepareToPlay (48000.0, 512);
+
+    juce::AudioBuffer<float> buffer (2, 512);
+    TestHelpers::fillWithSine (buffer, 48000.0, 1000.0, 0.5f);
+
+    juce::MidiBuffer midi;
+    processor.processBlock (buffer, midi);
+
+    const auto inputBefore = processor.getInputLevelDb();
+    const auto outputBefore = processor.getOutputLevelDb();
+
+    juce::AudioBuffer<float> emptyBuffer (2, 0);
+    CHECK_NOTHROW (processor.processBlock (emptyBuffer, midi));
+
+    CHECK (processor.getInputLevelDb() == inputBefore);
+    CHECK (processor.getOutputLevelDb() == outputBefore);
 }
 
 TEST_CASE ("Gain reduction meter stays at ~0 dB for a signal safely under the ceiling", "[metering]")
