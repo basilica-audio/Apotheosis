@@ -150,7 +150,7 @@ Two more things worth knowing if you null-test or measure latency yourself:
 
 **Prepare-latch: Oversampling and OS Filter behave exactly like Lookahead.** All three are read only when the host initialises the plugin, so a change takes effect at the next `prepareToPlay()` - reopening the project, changing the sample rate or buffer size, or in most hosts stopping and restarting the transport - not instantly while audio is running. Set them up front rather than reaching for them mid-mix, and don't automate them. (Live, click-free switching is planned, and needs machinery that is not safe to bolt on: re-allocating the oversampler while audio runs is a real-time hazard, so it is being done properly rather than quickly.)
 
-## Metering (engine-side; GUI display is a later milestone)
+## Metering
 
 Apotheosis's DSP engine continuously computes and exposes the current gain reduction, the output's true peak, and Momentary (400 ms)/Short-Term (3 s)/Integrated LUFS loudness readings. A visual meter surfacing these values in the plugin's UI is planned for the custom-GUI milestone (M3); until then, this data is available to any host or test harness that queries the processor directly.
 
@@ -213,6 +213,16 @@ doing the work. The smoother's real contribution is the structural
 zero-overshoot guarantee and a smoother envelope on transient-dense
 material, not a low-frequency distortion win over Classic at generous
 Lookahead settings. See `docs/architecture.md` for the full note.
+
+Three photoreal needle meters sit across the top of the editor, left to right: **Gain Reduction**, **True Peak**, and **LUFS** (Momentary, 400 ms integration). All three poll the DSP engine's existing metering accessors (`getGainReductionDb()`, `getOutputTruePeakDb()`, `getMomentaryLufs()`) on a 30 Hz timer and apply ~300 ms of ballistic smoothing, reading like a physical VU meter rather than jumping instantaneously. The Gain Reduction needle sits at rest when there is no reduction and sweeps away from rest as reduction increases; True Peak and LUFS both read directly against the same dB scale (a well-behaved master sits at/below Ceiling on the True Peak meter, and typical streaming/loud masters land comfortably on the LUFS meter's scale - very quiet material pins toward the scale's floor). Short-Term (3 s) and Integrated (session-running, absolute-gated) LUFS readings remain available to any host or test harness via `getShortTermLufs()`/`getIntegratedLufs()`, just not shown on their own dedicated needle. See [`docs/architecture.md`](architecture.md) for the K-weighting/gating implementation notes and its documented deviations from the full ITU-R BS.1770-4 two-pass algorithm, and [`docs/gui-components.md`](gui-components.md) for the exact per-meter dB-mapping rationale.
+
+## Window scale
+
+A button next to the preset bar cycles the editor between 100%, 150%, and 200% window scale (no free/continuous resize - the artwork is pre-rendered at fixed density tiers). The chosen scale is remembered per plugin instance and persists through session save/reload.
+
+## The Lookahead knob's dashed frame
+
+Lookahead is the one control on the Release panel enclosed in a dashed amber frame and labelled "Lookahead (Setup)". This is a **setup** parameter: it sizes the limiter's internal buffers and determines the plugin's reported latency, so changing it only takes effect the next time the audio engine restarts (e.g. reopening the plugin, or a host sample-rate/block-size change) rather than live while audio is playing - unlike every other knob on the faceplate, which responds immediately. It remains a normal, host-automatable parameter; the frame is purely a visual/accessibility cue about *when* a change takes effect.
 
 ## Presets
 

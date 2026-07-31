@@ -393,6 +393,9 @@ void TruePeakLimiterEngine::reset()
     momentaryLufsAtomic.store (-100.0f, std::memory_order_relaxed);
     shortTermLufsAtomic.store (-100.0f, std::memory_order_relaxed);
     integratedLufsAtomic.store (-100.0f, std::memory_order_relaxed);
+    inputLevelDbAtomic.store (-100.0f, std::memory_order_relaxed);
+    outputLevelDbAtomic.store (-100.0f, std::memory_order_relaxed);
+
     lraLuAtomic.store (0.0f, std::memory_order_relaxed);
     truePeakMaxHoldDbAtomic.store (-100.0f, std::memory_order_relaxed);
     maxGainReductionDbAtomic.store (0.0f, std::memory_order_relaxed);
@@ -599,6 +602,26 @@ void TruePeakLimiterEngine::processChunk (juce::dsp::AudioBlock<float>& block)
 
     juce::dsp::ProcessContextReplacing<float> context (block);
     inputGain.process (context);
+
+    // M3 photoreal GUI (victorian design): INPUT level meter reading - the
+    // plain base-rate peak of the signal actually about to enter the
+    // detector (post-input-gain, pre-oversampling/limiting), matching what
+    // an operator watching the meter would expect "input" to mean. See
+    // getInputLevelDb()'s docs for why this is a separate reading from
+    // getOutputTruePeakDb() (oversampled, post-limiting).
+    {
+        float inputPeakLinear = 0.0f;
+
+        for (size_t channel = 0; channel < numChannels; ++channel)
+        {
+            const auto* data = block.getChannelPointer (channel);
+
+            for (size_t sample = 0; sample < numSamples; ++sample)
+                inputPeakLinear = juce::jmax (inputPeakLinear, std::abs (data[sample]));
+        }
+
+        inputLevelDbAtomic.store (juce::Decibels::gainToDecibels (inputPeakLinear, -100.0f), std::memory_order_relaxed);
+    }
 
     const auto ceilingDb = ceilingSmoothed.skip (static_cast<int> (numSamples));
     const auto ceilingLinear = juce::Decibels::decibelsToGain (ceilingDb);
@@ -1334,6 +1357,25 @@ void TruePeakLimiterEngine::processChunk (juce::dsp::AudioBlock<float>& block)
                 }
             }
         }
+    }
+
+    // M3 photoreal GUI (victorian design): OUTPUT level meter reading - the
+    // plain base-rate peak of the FINAL output signal (post-dither, if any
+    // - this loop runs unconditionally, after the optional dither block
+    // above, so it reflects whatever actually reaches the host). See
+    // getOutputLevelDb()'s docs.
+    {
+        float outputPeakLinear = 0.0f;
+
+        for (size_t channel = 0; channel < numChannels; ++channel)
+        {
+            const auto* data = block.getChannelPointer (channel);
+
+            for (size_t sample = 0; sample < numSamples; ++sample)
+                outputPeakLinear = juce::jmax (outputPeakLinear, std::abs (data[sample]));
+        }
+
+        outputLevelDbAtomic.store (juce::Decibels::gainToDecibels (outputPeakLinear, -100.0f), std::memory_order_relaxed);
     }
 
     //==================================================================
