@@ -481,11 +481,25 @@ TEST_CASE ("T16: processBlock allocates nothing with every v0.4.0 feature on", "
 
     // The guard itself must work, or the assertion above is vacuous: an
     // allocation inside an armed region has to be seen.
+    //
+    // This has to go through a direct call to the replaced ::operator new,
+    // not a `new`/`delete` expression. [expr.new] explicitly permits an
+    // implementation to omit the allocation of a new-expression whose
+    // storage is never observably used, and Clang and MSVC do exactly that
+    // at Release optimisation levels regardless of whether operator new was
+    // user-replaced - a plain `new int (7)` immediately followed by
+    // `delete` passed this check in a local -O0 build but silently elided
+    // to zero allocations under -O2 (empirically verified: see PR
+    // description), which would have made every T16 allocation assertion
+    // in this file vacuous outside Debug builds. Calling ::operator new
+    // directly is a plain function call, so the elision permission does
+    // not apply, and the volatile write forces the returned storage to be
+    // observably used.
     {
         ScopedAllocationGuard guard;
-        auto* canary = new int (7);
-        CHECK (*canary == 7);
-        delete canary;
+        auto* deliberate = static_cast<int*> (::operator new (sizeof (int)));
+        *static_cast<volatile int*> (deliberate) = 7;
+        ::operator delete (deliberate);
     }
 
     CHECK (ScopedAllocationGuard::count() >= 1);
