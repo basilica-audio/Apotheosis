@@ -68,6 +68,13 @@ public:
     float getShortTermLufs() const noexcept { return engine.getShortTermLufs(); }
     float getIntegratedLufs() const noexcept { return engine.getIntegratedLufs(); }
 
+    // M3 photoreal GUI (victorian design): INPUT/OUTPUT dBFS peak readings
+    // for the two level small-meters - see TruePeakLimiterEngine's own
+    // getInputLevelDb()/getOutputLevelDb() docs for exactly where each is
+    // measured.
+    float getInputLevelDb() const noexcept { return engine.getInputLevelDb(); }
+    float getOutputLevelDb() const noexcept { return engine.getOutputLevelDb(); }
+
     // v0.4.0 metering pack (F5/F2): spec-gated LRA, resettable true-peak
     // max hold and deepest-GR hold - see TruePeakLimiterEngine.h.
     float getLoudnessRangeLu() const noexcept { return engine.getLoudnessRangeLu(); }
