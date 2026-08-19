@@ -1,5 +1,7 @@
 #include "MasterCropKnob.h"
 
+#include "KeyboardSteps.h"
+
 #include <cmath>
 
 namespace basilica::gui
@@ -14,6 +16,13 @@ namespace basilica::gui
         setMouseDragSensitivity (normalDragSensitivity);
         setScrollWheelEnabled (true);
         setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
+
+        // Keyboard navigation (issue #5, WCAG 2.1.1): juce::Slider::init()
+        // ships with setWantsKeyboardFocus(false) in JUCE 8.0.14
+        // (juce_Slider.cpp:1461) - without opting back in, Tab never
+        // reaches the knob, the focus ring in paint() can never show, and
+        // keyPressed() below never fires.
+        setWantsKeyboardFocus (true);
     }
 
     MasterCropKnob::~MasterCropKnob() = default;
@@ -116,6 +125,11 @@ namespace basilica::gui
             g.setColour (juce::Colours::white.withAlpha (0.85f));
             g.drawEllipse (bounds.reduced (1.0f), 1.5f);
         }
+    }
+
+    bool MasterCropKnob::keyPressed (const juce::KeyPress& key)
+    {
+        return handleSliderKeyPress (*this, key) || juce::Slider::keyPressed (key);
     }
 
     void MasterCropKnob::mouseDown (const juce::MouseEvent& e)
