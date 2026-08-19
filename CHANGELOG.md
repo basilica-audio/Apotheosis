@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-19
+
+The M3 GUI release: the previous filmstrip-knob/AnalogMeter editor is replaced by the
+photoreal "victorian" faceplate, reusing the suite-wide component family piloted by
+aureate's M3 GUI (`HubNeedle`, `MasterCropKnob`, `SubtractiveGlow`, `Flicker`).
+
+### Added
+
+- **M3 photoreal GUI (victorian design)** (PR #24). A grand gain-reduction meter plus
+  three small meters (input level, output level, and true-peak margin, i.e. Ceiling
+  minus measured true peak), all four needles sharing one convention: rest is the
+  calmest/safest reading on the left, deflection to the right as the reading gets
+  hotter. Three physical knobs (Input Gain, Ceiling, Release); every other parameter
+  remains fully automatable/preset-only - mapping table, the measured (numeral-free)
+  dial sweeps, and the rationale in `docs/gui-mapping.md`.
+- Four-tube bay whose glow follows limiting intensity (`SubtractiveGlow`, subtractive
+  model): idle at t ~ 0.75 with flicker, rising to the hard t = 1.0 ceiling (identical
+  to the baked master) as gain reduction reaches the grand needle's full-scale 12 dB -
+  the tubes and the needle top out together.
+- New real-time-safe `getInputLevelDb()` / `getOutputLevelDb()` peak metering on the
+  processor.
+- Sample-rate-matrix reprepare test: one instance driven through 44.1k -> 96k -> 192k ->
+  44.1k with parameter churn between every reprepare, for both the default and heaviest
+  (16x Linear Phase) oversampling modes, asserting `getLatencySamples()` matches the
+  manual's published latency table at every step (PR #30).
+
+### Fixed
+
+- The allocation-guard self-test's canary was a plain new-expression, which [expr.new]
+  permits the compiler to elide, and whose apparent pass was in fact masked by Catch2's
+  own internal allocations (measured: count 4 with the old pattern, 0 for the bare
+  canary under -O2). The canary now uses a direct `::operator new` call written through
+  a volatile pointer, reporting exactly 1 allocation in both Debug and Release - the
+  suite-wide elision-safe pattern from requiem/triptych/silentium (PR #30).
+
+### Changed
+
+- `docs/manual.md`: full reported-latency table across every Oversampling x OS Filter
+  combination at 44.1/48/96/192 kHz, "what the oversampling factors buy you" (measured
+  alias floors and pass-through flatness), "what is verified, and to what bound", and a
+  "Known limitations" section (PR #28).
+- Branding: v3 flat squircle icon (no dish/ring) (PR #29).
+
 ## [0.4.0] - 2026-07-27
 
 State-of-the-art DSP pass. Seven new controls, a rewritten gain-envelope
