@@ -47,6 +47,13 @@ namespace basilica::gui
         void mouseDown (const juce::MouseEvent& e) override;
         void mouseDrag (const juce::MouseEvent& e) override;
 
+        // WCAG 2.1.1 Keyboard (issue #5): WAI-ARIA-style stepping (Arrow
+        // 1%, Shift+Arrow fine, PageUp/Down 10%, Home/End extremes) via
+        // KeyboardSteps.h - juce::Slider's own keyPressed (JUCE 8.0.14,
+        // juce_Slider.cpp:1029) steps by the raw parameter interval
+        // (impractically fine here) and swallows Shift entirely.
+        bool keyPressed (const juce::KeyPress& key) override;
+
         // Normalised slider proportion [0,1] -> absolute rotation in
         // degrees, clockwise from straight up - 0.5 = 0deg (12 o'clock,
         // the crop's own baked rest pose). Exposed for unit testing.
