@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-20
+
+An accessibility release. Every knob on the victorian faceplate is now reachable and
+operable from the keyboard alone, with step sizes a person can actually use. Nothing in
+the audio path changed - a v0.5.0 session loads and renders bit-identically.
+
+### Added
+
+- **WAI-ARIA-style keyboard stepping on the knobs** (`src/gui/KeyboardSteps.h`, PR #32).
+  Arrow moves 1% of the control's range, Shift+Arrow 0.1% (the keyboard analog of the
+  suite's Shift-drag fine mode), PageUp/PageDown 10%, Home/End the range extremes. Steps
+  are taken in the slider's proportional domain, so a skewed range sweeps as evenly under
+  the arrow keys as it does under a mouse drag, and the result is still snapped to the
+  parameter's own interval grid - quantisation is never violated. This needed its own
+  helper rather than just a focus flag: JUCE's stock handler steps by the raw parameter
+  interval (0.01 dB across Input Gain's 36 dB range - 3600 presses end to end) and
+  refuses outright the moment any modifier key is down, so Shift+Arrow did nothing at all.
+  Ctrl/Cmd-modified arrows are deliberately left to the host as shortcuts.
+- Two new `tests/gui/EditorAccessibilityTests.cpp` cases pinning the contract: focus
+  reachability of all three knobs and the scale button (with a count assertion, so a
+  zero-match loop cannot pass vacuously), and coarse/fine/page/Home/End stepping plus
+  Ctrl/Cmd passthrough on Input Gain.
+
+### Fixed
+
+- **The three knobs (Input Gain, Ceiling, Release) could not be reached by keyboard at
+  all** (PR #32). `juce::Slider::init()` ships `setWantsKeyboardFocus(false)` (JUCE
+  8.0.14, `juce_Slider.cpp:1461`) and `MasterCropKnob` never opted back in, so Tab
+  skipped straight past all three, the WCAG 2.4.7 focus ring already drawn in `paint()`
+  could never appear, and no key press ever reached a knob. They now take focus in
+  reading order and show their ring while they hold it.
+
+### Known limitations
+
+- This release covers **keyboard** operation (WCAG 2.1.1, 2.4.7). Assistive-technology
+  increment and decrement actions - VoiceOver's rotor, NVDA's value adjustment - do not
+  go through `keyPressed()`; they go through JUCE's accessibility value interface, which
+  still reports the raw parameter interval as its step size. A screen-reader user
+  therefore still moves Input Gain 0.01 dB per action. Closing that gap means giving each
+  control a custom `AccessibilityHandler` with its own value interface, which is the next
+  step and is not part of this release.
+
 ## [0.5.0] - 2026-08-19
 
 The M3 GUI release: the previous filmstrip-knob/AnalogMeter editor is replaced by the
