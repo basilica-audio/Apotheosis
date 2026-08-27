@@ -7,14 +7,14 @@
 [![CI](https://github.com/basilica-audio/apotheosis/actions/workflows/ci.yml/badge.svg)](https://github.com/basilica-audio/apotheosis/actions/workflows/ci.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
-> **Work in progress.** Apotheosis is pre-1.0 and under active development. Binaries for macOS and Windows are available from the [Releases](../../releases) page (currently unsigned — see the release notes); building from source works too. Expect breaking changes until v1.0.0 ships (see [Roadmap](#roadmap)).
+> **Work in progress.** Apotheosis is pre-1.0 and under active development. Binaries for macOS and Windows are available from the [Releases](../../releases) page (macOS builds are signed with a Developer ID certificate, notarized and stapled); building from source works too. Expect breaking changes until v1.0.0 ships (see [Roadmap](#roadmap)).
 
 <!-- ==BEGIN BODY== (plugin engineer: replace this block with What it is / Features / Signal flow / Roadmap) -->
 ## What it is
 
 Apotheosis is a lookahead brickwall **true-peak limiter** for the master bus, built on JUCE 8. It is the final gate before export: input gain drives an oversampled true-peak detector, a lookahead delay makes the resulting gain reduction instantaneous (no attack transient) rather than reactive, and a smooth release relaxes it back once the peak has passed. The output's true (inter-sample) peak never exceeds the Ceiling.
 
-## Features (v0.3.0 scope)
+## Features
 
 - **Input Gain** - -12 to +24 dB trim into the limiter
 - **Ceiling** - -12 to 0 dBTP true-peak target, default -1.0 dBTP (conventional mastering safety margin)
@@ -27,7 +27,7 @@ Apotheosis is a lookahead brickwall **true-peak limiter** for the master bus, bu
 - **Clip Mix** - 0-100% blend between the transparent limiter path and an alternate tanh soft-clip "clipper" character, both backed by the same never-exceed-ceiling guarantee
 - **Dither** - Off / 16-bit / 24-bit TPDF dither at the output word length, crossed with **Dither Shape** (Flat / Shaped)
 - **Metering** - three photoreal needle meters (Gain Reduction / True Peak / LUFS), plus Short-Term/Integrated LUFS available via the processor for any host/test harness
-- **Presets** - eight factory presets, user save/load/import/export (single files and zip banks), German-localised preset bar interface
+- **Presets** - eleven factory presets, user save/load/import/export (single files and zip banks), German-localised preset bar interface
 - **Photoreal skeuomorphic GUI** *(v0.3.0)* - pre-rendered brass/gunmetal faceplate, filmstrip knobs, needle meters, stepped 100/150/200% window scaling, full keyboard/screen-reader accessibility
 - Full state save/recall via `AudioProcessorValueTreeState`, with backward-tolerant migration from v0.1's seven-parameter state
 
@@ -52,9 +52,16 @@ See [`docs/manual.md`](docs/manual.md) for the full parameter reference and usag
 | M4 | Release engineering - signing, notarization, installers, v1.0.0 | Planned |
 <!-- ==END BODY== -->
 
+## Documentation
+
+- [`docs/manual.md`](docs/manual.md) — the user manual: what every control does, and how to use it
+- [`docs/presets.md`](docs/presets.md) — what each factory preset is for
+- [`CHANGELOG.md`](CHANGELOG.md) — what shipped in each release
+- [Apotheosis on basilica-audio.github.io](https://basilica-audio.github.io/website/apotheosis/) — the product page (English and German)
+
 ## Installation
 
-No pre-built binaries are published yet (see the work-in-progress notice above). Once releases begin, installation will follow the standard plugin locations:
+Download the archive for your platform from the [Releases](../../releases) page and copy the bundles into the standard plugin locations:
 
 **macOS**
 

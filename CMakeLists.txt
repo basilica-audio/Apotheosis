@@ -47,6 +47,10 @@ juce_add_plugin(Apotheosis
     PLUGIN_CODE Apth
     FORMATS AU VST3 Standalone
     PRODUCT_NAME "Apotheosis"
+    COMPANY_WEBSITE "https://basilica-audio.github.io/website/"
+    COMPANY_COPYRIGHT "Copyright (c) 2026 Yves Vogl"
+    DESCRIPTION "Lookahead true-peak brickwall limiter for the master bus"
+    VST3_CATEGORIES Fx Dynamics Mastering
     ICON_BIG "docs/assets/icon.png"
     COPY_PLUGIN_AFTER_BUILD TRUE
     IS_SYNTH FALSE
