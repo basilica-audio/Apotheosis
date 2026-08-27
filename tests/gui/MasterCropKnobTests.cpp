@@ -64,7 +64,12 @@ TEST_CASE ("MasterCropKnob::buildFeatheredCrop is opaque at the centre and fully
 
     SECTION ("canvas is sized to exactly 2x the outer (94%) radius")
     {
-        CHECK (crop.getWidth() == Catch::Approx (outerRadius * 2.0f).margin (4.0));
+        // Exact, not approximate: buildFeatheredCrop sizes its canvas
+        // deterministically to ceil(2 * outerRadius) + 2 - the +2 px
+        // fully-transparent border ring documented at the definition. Here
+        // outerRadius = radiusPx * contentFraction = 100 * 0.94 = 94 px, so
+        // the canvas is ceil(188) + 2 = 190 px square.
+        CHECK (crop.getWidth() == 190);
         CHECK (crop.getHeight() == crop.getWidth());
     }
 
