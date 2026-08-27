@@ -1,6 +1,6 @@
 # Factory presets
 
-Eleven factory presets ship with Apotheosis v0.4.0: the eight v0.2.0
+Eleven factory presets ship with Apotheosis: the eight v0.2.0
 presets below (unchanged, byte-for-byte) plus three that exercise the
 v0.4.0 engine (see "v0.4.0 additions" at the end of this document). All are
 embedded via BinaryData
