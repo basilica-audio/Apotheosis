@@ -226,7 +226,7 @@ Lookahead is the one control on the Release panel enclosed in a dashed amber fra
 
 ## Presets
 
-A preset bar sits at the top of the editor (`[<] [PresetName] [>] [Save] [Save As...] [Delete] [Import...] [Export...]`). Apotheosis ships with eleven factory presets covering the v1-compatible default plus starting points for each new v0.2.0 and v0.4.0 control - see [`docs/presets.md`](presets.md) for the full list and intent of each. Your own presets save to `~/Library/Audio/Presets/Yves Vogl/Apotheosis/` on macOS (`%APPDATA%/Yves Vogl/Apotheosis/Presets/` on Windows); the preset menu's "Set current as default" makes any preset (factory or your own) the one that loads automatically the next time you open a fresh instance. Import/export works with single `.basilicapreset` files and `.zip` preset banks.
+A preset bar sits at the top of the editor (`[<] [PresetName] [>] [Save] [Save As...] [Delete] [Import...] [Export...]`). Apotheosis ships with eleven factory presets covering the v1-compatible default plus starting points for each new v0.2.0 and v0.4.0 control - see [`docs/presets.md`](presets.md) for the full list and intent of each. Your own presets save to `~/Library/Audio/Presets/Basilica Audio/Apotheosis/` on macOS (`%APPDATA%/Basilica Audio/Apotheosis/Presets/` on Windows); the preset menu's "Set current as default" makes any preset (factory or your own) the one that loads automatically the next time you open a fresh instance. Import/export works with single `.basilicapreset` files and `.zip` preset banks.
 
 ## Language
 
