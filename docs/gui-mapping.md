@@ -219,3 +219,41 @@ coverage), `HubNeedleTests.cpp` (ballistics + the new linear value→angle
 mapping, both orderings of rest/full-scale value), `MasterCropKnobTests.cpp`
 / `SubtractiveGlowTests.cpp` (copied verbatim from the pilot — fully
 design-agnostic components, unchanged).
+
+## Typography pass (suite typo phase)
+
+Owner decision 2026-07-26 ("Weg 2", made on THIS design after its scale
+correction failed 3x in the render loop): text is never baked into the AI
+master - it is set locally as a sharp JUCE text layer in the suite serif
+(EB Garamond, embedded via BinaryData, OFL). Implementation:
+`src/gui/PlateTypography.h` (copied verbatim from the aureate pilot's
+typography pass), drawn LAST within `paint()` - over the tube-glow blit,
+under the needle child components, exactly like a printed dial face
+beneath its needle.
+
+What is lettered:
+
+- **Grand dial numerals** `0 3 6 9 12` (unsigned, classic GR-meter
+  convention) on the open parchment OUTSIDE the baked tick arc, each at
+  the EXACT angle the needle deflects to for that reading - derived at
+  draw time from the same `grRest*`/`grFullScale*` constants the needle
+  maps through, so numerals and needle can never disagree.
+- **`GAIN REDUCTION` caption** inside the arc, above the baked gear
+  bridge - the honest wordmark for this dial (it reads gain reduction,
+  not VU).
+- **Small-meter legends** `INPUT` / `OUTPUT` / `MARGIN`, gilded, printed
+  ON each gauge's own face mound below the pivot (the way real gauges
+  print their function on the dial; the plate bands between the bezels
+  proved narrower than measured - the bezels' rings fade gradually - and
+  below the bottom dial the oak rail begins immediately).
+- **Gilded knob labels** `INPUT GAIN` / `CEILING` / `RELEASE` under each
+  knob's interactive hit-area.
+
+Two lettering treatments, both through the one shared
+`PlateTypography::drawEngraved` path: printed sepia ink on the bright
+parchment (numerals/caption), gilded gold with a dark drop shadow on the
+dark bronze (legends/labels - incision ink would vanish on a ~50-90
+luminance ground; gold-leaf lettering is the period-correct treatment and
+matches the brand's antique-gold-on-charcoal system).
+
+Tests: `tests/gui/EditorTypographyTests.cpp`.
