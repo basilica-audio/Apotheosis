@@ -178,6 +178,71 @@ namespace apth::layout
     constexpr float marginFullScaleDb = 0.0f;
 
     //==========================================================================
+    // Typography pass (suite typo phase, owner decision 2026-07-26: text
+    // is never baked into the AI master - this design's own render
+    // decision even REMOVED all baked numerals, see brand/mocks/victorian/
+    // prompts.md's "IMPORTANT SCALE CORRECTION" - so every numeral, legend
+    // and label is set locally as a sharp JUCE text layer, see
+    // src/gui/PlateTypography.h and docs/gui-mapping.md's typography
+    // section).
+    //
+    // Grand dial numerals: printed-ink figures on the parchment face, one
+    // per 3 dB of gain reduction (0/3/6/9/12, unsigned - classic GR-meter
+    // faces print unsigned dB depths), each centred on a circle CONCENTRIC
+    // WITH THE NEEDLE PIVOT (the tick arc's own geometry - see
+    // analysis/measure_dial_ticks.py), OUTSIDE the baked tick ink (the
+    // arc's tick band spans radii ~101..140 master px from the pivot at
+    // its apex, verified against the live render during this pass - the
+    // open upper parchment above it is the face's only roomy field).
+    // Their angles are derived
+    // at draw time from the SAME grRest/grFullScale constants the needle
+    // itself maps through (PluginEditor.cpp::drawPlateTypography), so
+    // numeral positions and needle deflection can never disagree.
+    constexpr float grNumeralRadiusMasterPx = 178.0f;
+    constexpr float grNumeralStepDb = 3.0f;
+    constexpr int grNumeralCount = 5; // 0 .. -12 in -3 dB steps
+    constexpr int grNumeralBoxSize1x = 22;
+
+    // Function caption printed on the parchment INSIDE the tick arc,
+    // between the arc and the baked gear bridge, centred on the pivot's
+    // own x - the honest wordmark for this dial (it reads gain reduction,
+    // not VU; classic meter faces print the function name inside the arc).
+    constexpr float grCaptionRadiusMasterPx = 80.0f; // straight up from the pivot
+    constexpr int grCaptionWidth1x = 140;
+    constexpr int grCaptionHeight1x = 14;
+
+    // Small-meter legends: printed ON each gauge's own face, on the dark
+    // needle-mound below the pivot - the way real gauges print their
+    // function name on the dial itself. This is the only placement that
+    // works for all three dials consistently: the plate bands between the
+    // bezels are narrower than they measure (the bezels' outer rings fade
+    // gradually - live-render verification during this pass showed
+    // band-placed lettering colliding with the mid and bottom bezels), and
+    // below the bottom dial the baked oak rail begins immediately. Gilded
+    // lettering rather than dark engraving ink: the mound is dark
+    // (luminance ~50..80), where an incision-ink read vanishes - gold
+    // lettering is the period-correct treatment and matches the brand's
+    // antique-gold-on-charcoal system. Each legend is centred on its own
+    // needle pivot's x, 19px @1x below the pivot (on the mound, under the
+    // needle's own foot - the sprite child component draws over it, like
+    // any printed dial face under its needle).
+    struct Legend1x
+    {
+        int cx, cy, w, h;
+    };
+
+    constexpr Legend1x smallMeterLegend1x[3] {
+        { 781, 164, 60, 11 }, // INPUT (on smallMeterTop's mound; pivot1x (781,145) + 19)
+        { 782, 287, 60, 11 }, // OUTPUT (on smallMeterMid's mound; pivot1x (782,268) + 19)
+        { 782, 398, 60, 11 }, // MARGIN (on smallMeterBottom's mound; pivot1x (782,379) + 19)
+    };
+
+    // Gilded knob labels, centred under each knob's interactive hit-area.
+    constexpr int knobLabelGap1x = 3;
+    constexpr int knobLabelWidth1x = 96;
+    constexpr int knobLabelHeight1x = 14;
+
+    //==========================================================================
     // Tube bay: ONE glow zone covering all 4 tubes (components/tube-
     // glow.json's own offsetX/offsetY/width/height - a single bounding rect,
     // same "one rect, not four independent tube cutouts" simplification

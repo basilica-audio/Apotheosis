@@ -124,6 +124,16 @@ juce_add_binary_data(ApotheosisBinaryData SOURCES
     resources/gui/needle_smallMeterMid_victorian.png
     resources/gui/needle_smallMeterBottom_victorian.png
     resources/gui/tube_glow_victorian.png
+    # Suite typography: EB Garamond (OFL, resources/fonts/OFL-EBGaramond.txt),
+    # the same two faces siblings silentium/aureate embed - used by
+    # src/gui/PlateTypography for the live dial numerals, meter legends and
+    # knob labels drawn over the master render (the suite-wide typography
+    # pass: this design's own render decision removed all baked numerals -
+    # brand/mocks/victorian/prompts.md's "IMPORTANT SCALE CORRECTION" - and
+    # the owner decision of 2026-07-26 sets all lettering locally as a
+    # sharp JUCE text layer instead).
+    resources/fonts/EBGaramond-Regular.ttf
+    resources/fonts/EBGaramond-SemiBold.ttf
 )
 
 # ==============================================================================

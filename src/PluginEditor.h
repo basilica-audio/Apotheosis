@@ -7,6 +7,7 @@
 
 #include "gui/HubNeedle.h"
 #include "gui/MasterCropKnob.h"
+#include "gui/PlateTypography.h"
 #include "gui/SubtractiveGlow.h"
 #include "presets/PresetBar.h"
 
@@ -31,6 +32,10 @@ class ApotheosisAudioProcessor;
 //   4. 4x HubNeedle (own child components: grand Gain Reduction meter +
 //      3 small Input/Output/True-Peak-Margin meters - the dial faces
 //      themselves stay fully baked)
+//   5. typography layer (paint(), PlateTypography - printed grand-dial
+//      numerals + caption on the parchment, gilded small-meter legends
+//      and knob labels on the bronze; drawn last in paint(), under the
+//      needle child components, exactly like a printed dial face)
 //
 // This design has NO toggle-capable controls (no lever/switch element in
 // the master render at all - see brand/mocks/victorian/prompts.md), so
@@ -76,6 +81,7 @@ private:
     void configureKnob (Knob& knob, const juce::String& parameterId, const juce::String& labelText);
     void applyScaleStep (int newStepIndex);
     void cycleScale();
+    void drawPlateTypography (juce::Graphics& g, juce::Point<float> plateOrigin, float scale) const;
 
     ApotheosisAudioProcessor& audioProcessor;
 
@@ -96,6 +102,7 @@ private:
     static constexpr int numKnobs = 3;
     std::array<Knob, numKnobs> knobs;
 
+    basilica::gui::PlateTypography typography;
     basilica::gui::SubtractiveGlow tubeGlow;
     float tubeGlowMix = 1.0f;
     basilica::gui::GlowMixState tubeGlowState;

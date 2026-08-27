@@ -20,7 +20,8 @@ namespace
     struct KnobLayoutEntry
     {
         const char* parameterId;
-        const char* labelText; // accessible name only - no baked text labels
+        const char* labelText; // accessible name (title/tooltip surface)
+        const char* engravedLabel; // the plate's own gilded caps (typography pass)
         float cxMaster, cyMaster, rMaster; // true measured knob geometry (crop source) - layout-manifest.json "knobs"
         float cx1x; // interactive slider hit-area X centre (Y is the shared knobRowY1x)
     };
@@ -31,9 +32,37 @@ namespace
     // Release, left to right, matching layout-manifest.json's own knob
     // index order (1/2/3 = left-to-right).
     constexpr std::array<KnobLayoutEntry, 3> knobLayout {
-        KnobLayoutEntry { ParamIDs::inputGain, "Input Gain", 698.0f, 545.0f, 57.0f, knobCentreX1x[0] },
-        KnobLayoutEntry { ParamIDs::ceiling, "Ceiling", 867.0f, 546.0f, 55.0f, knobCentreX1x[1] },
-        KnobLayoutEntry { ParamIDs::release, "Release", 1038.0f, 543.0f, 57.0f, knobCentreX1x[2] },
+        KnobLayoutEntry { ParamIDs::inputGain, "Input Gain", "INPUT GAIN", 698.0f, 545.0f, 57.0f, knobCentreX1x[0] },
+        KnobLayoutEntry { ParamIDs::ceiling, "Ceiling", "CEILING", 867.0f, 546.0f, 55.0f, knobCentreX1x[1] },
+        KnobLayoutEntry { ParamIDs::release, "Release", "RELEASE", 1038.0f, 543.0f, 57.0f, knobCentreX1x[2] },
+    };
+
+    // ==================== typography pass ====================
+    // See PluginEditorLayout.h's typography block for placement provenance
+    // and docs/gui-mapping.md's typography section for the full rationale.
+    constexpr const char* grCaptionText = "GAIN REDUCTION";
+    constexpr const char* smallMeterLegendText[3] = { "INPUT", "OUTPUT", "MARGIN" };
+
+    // Printed ink on the parchment dial face (bright ground, ~150-200
+    // luminance): warm sepia near-black, with only a whisper of a lit lip -
+    // a printed face, not a deep engraving.
+    const basilica::gui::EngravedTextStyle dialNumeralStyle {
+        juce::Colour (0xdd2b1a0e), juce::Colour (0x16fff1cf), 15.0f, 0.02f, true
+    };
+    const basilica::gui::EngravedTextStyle dialCaptionStyle {
+        juce::Colour (0xc42b1a0e), juce::Colour (0x14fff1cf), 11.0f, 0.22f, true
+    };
+
+    // Gilded lettering on the dark bronze plate (luminance ~50-90, where
+    // incision ink would vanish): antique gold with a dark drop shadow one
+    // scaled pixel below - EngravedTextStyle's two passes double as
+    // shadow + leaf here (the "highlight" pass is simply the darker,
+    // offset one).
+    const basilica::gui::EngravedTextStyle gildedLegendStyle {
+        juce::Colour (0xf0d6ad5e), juce::Colour (0x8c000000), 9.5f, 0.18f, true
+    };
+    const basilica::gui::EngravedTextStyle gildedKnobLabelStyle {
+        juce::Colour (0xf0d6ad5e), juce::Colour (0x8c000000), 13.0f, 0.14f, true
     };
 
     // Tube-bay glow breathing ballistics (SubtractiveGlow.h's
@@ -86,7 +115,9 @@ namespace
 ApotheosisAudioProcessorEditor::ApotheosisAudioProcessorEditor (ApotheosisAudioProcessor& processorToEdit)
     : juce::AudioProcessorEditor (&processorToEdit),
       audioProcessor (processorToEdit),
-      presetBar (initLocalisationThenGetPresetManager (processorToEdit))
+      presetBar (initLocalisationThenGetPresetManager (processorToEdit)),
+      typography (BinaryData::EBGaramondRegular_ttf, BinaryData::EBGaramondRegular_ttfSize,
+                  BinaryData::EBGaramondSemiBold_ttf, BinaryData::EBGaramondSemiBold_ttfSize)
 {
     masterImage = loadImage (BinaryData::master_victorian_png, BinaryData::master_victorian_pngSize);
 
@@ -255,11 +286,92 @@ void ApotheosisAudioProcessorEditor::paint (juce::Graphics& g)
         tubeGlow.drawZone (g, destRect, tubeGlowMix);
     }
 
+    // 4. Typography layer (suite typo phase - PlateTypography.h): printed
+    // grand-dial numerals + caption on the parchment, gilded small-meter
+    // legends and knob labels on the bronze. Drawn LAST within paint() (so
+    // the tube-glow blit can never cover it), but still UNDER the needle
+    // child components - exactly like a real printed dial face beneath its
+    // needle.
+    drawPlateTypography (g, plateOrigin, scale);
+
     // (The 4 needles are separate HubNeedle child components, drawn after
     // this method returns - see resized() for their bounds. Everything
     // else - oak frame, brass plate engraving, honeycomb mesh, every dial
     // face/tick arc/red zone, the knobs' own baked outer rim - stays BAKED
     // in the master, no draw calls for any of it.)
+}
+
+void ApotheosisAudioProcessorEditor::drawPlateTypography (juce::Graphics& g, juce::Point<float> plateOrigin, float scale) const
+{
+    constexpr auto masterScale = (float) plateWidth1x / (float) masterCanvasWidthPx;
+
+    const auto toScreen = [&] (juce::Rectangle<float> local1x)
+    {
+        return juce::Rectangle<float> (plateOrigin.x + local1x.getX() * scale,
+                                       plateOrigin.y + local1x.getY() * scale,
+                                       local1x.getWidth() * scale,
+                                       local1x.getHeight() * scale);
+    };
+
+    // Grand dial: numerals at 0/-3/-6/-9/-12 dB GR, each centred on the
+    // pivot-concentric numeral circle at the EXACT angle the needle itself
+    // would deflect to for that reading (same jmap through the same
+    // grRest/grFullScale constants - see HubNeedle's own value->angle
+    // mapping), printed unsigned like a classic GR-meter face, OUTSIDE the
+    // baked tick arc on the open upper parchment.
+    const juce::Point<float> grPivot1x (
+        (float) mainVUNeedle1x.topLeft1x.x + (float) mainVUNeedle1x.componentSize1x * 0.5f,
+        (float) mainVUNeedle1x.topLeft1x.y + (float) mainVUNeedle1x.componentSize1x * 0.5f);
+
+    const auto numeralRadius1x = grNumeralRadiusMasterPx * masterScale;
+
+    for (int i = 0; i < grNumeralCount; ++i)
+    {
+        const auto db = -grNumeralStepDb * (float) i;
+        const auto angleDeg = juce::jmap (db, grRestDb, grFullScaleReductionDb,
+                                          grRestAngleDeg, grFullScaleAngleDeg);
+        const auto angleRad = juce::degreesToRadians (angleDeg);
+
+        const juce::Point<float> centre1x (grPivot1x.x + numeralRadius1x * std::sin (angleRad),
+                                           grPivot1x.y - numeralRadius1x * std::cos (angleRad));
+
+        const juce::Rectangle<float> box1x ((float) grNumeralBoxSize1x, (float) grNumeralBoxSize1x);
+
+        typography.drawEngraved (g, juce::String ((int) -db),
+                                 toScreen (box1x.withCentre (centre1x)), scale, dialNumeralStyle);
+    }
+
+    // Function caption, straight up from the pivot, between the numeral
+    // arc and the baked gear bridge.
+    {
+        const juce::Point<float> captionCentre1x (grPivot1x.x,
+                                                  grPivot1x.y - grCaptionRadiusMasterPx * masterScale);
+        const juce::Rectangle<float> box1x ((float) grCaptionWidth1x, (float) grCaptionHeight1x);
+
+        typography.drawEngraved (g, grCaptionText, toScreen (box1x.withCentre (captionCentre1x)), scale, dialCaptionStyle);
+    }
+
+    // Small-meter legends (gilded, printed on each gauge's own face mound
+    // below the pivot - see PluginEditorLayout.h for why on-face is the
+    // only consistent placement this column allows).
+    for (size_t i = 0; i < 3; ++i)
+    {
+        const auto& l = smallMeterLegend1x[i];
+        const juce::Rectangle<float> box1x ((float) (l.cx - l.w / 2), (float) (l.cy - l.h / 2),
+                                            (float) l.w, (float) l.h);
+
+        typography.drawEngraved (g, smallMeterLegendText[i], toScreen (box1x), scale, gildedLegendStyle);
+    }
+
+    // Gilded knob labels, centred under each knob's interactive hit-area.
+    for (const auto& entry : knobLayout)
+    {
+        const juce::Rectangle<float> box1x (entry.cx1x - (float) knobLabelWidth1x * 0.5f,
+                                            (float) (knobRowY1x + knobDiameter1x / 2 + knobLabelGap1x),
+                                            (float) knobLabelWidth1x, (float) knobLabelHeight1x);
+
+        typography.drawEngraved (g, entry.engravedLabel, toScreen (box1x), scale, gildedKnobLabelStyle);
+    }
 }
 
 void ApotheosisAudioProcessorEditor::resized()
