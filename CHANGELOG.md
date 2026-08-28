@@ -7,8 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.6.1] — 2026-08-28
+### Added
 
+- **A factory-preset headroom gate** (`tests/PresetHeadroomTests.cpp`). Every shipped factory
+  preset is rendered through the real `AudioProcessor` at 48 kHz against the suite reference
+  programme — four plucked notes spanning E1 41.203 Hz to A5 880.000 Hz, twelve harmonics each,
+  peak-normalised to **−12 dBFS**, the level a track is conventionally recorded at and therefore
+  the level a preset's author must be assumed to have voiced for — and its output peak asserted
+  **below 0 dBFS**. A preset added later that clips this reference fails here.
+
+  The case asserts how many factory presets it exercised (11), so a preset library that
+  stopped loading is distinguishable from every preset passing, and it measures **both** ways a
+  user arrives at a preset: a restored session (state first, then `prepareToPlay()`, so every
+  smoothed stage is primed at the preset's own values) and a mid-session click in the preset
+  browser (parameters jump while the DSP is still primed for the old ones). Those are not the
+  same measurement — in `basilica-audio/Aureate` the difference was a 17.6 dB blast the
+  session-load path could not see at all. The recall path is held to "below full scale **or**
+  below where you already were", so a transition is blamed only for clipping it *introduced*.
+
+  **Nothing needed fixing.** All 11 presets already pass on both paths, at −5.87 to
+  −12.01 dBFS on session load (worst *Punchy Loud Style* at −5.87 dBFS) and no worse
+  than −6.33 dBFS on recall; the departure state renders at −12.01 dBFS. No
+  preset is raised toward the line either — the gate is a ceiling, not a level-matching target,
+  and relative loudness between presets stays a taste question.
+
+## [0.6.1] — 2026-08-28
 ### Changed
 
 - **The suite now presents itself as Basilica Audio in every host.** `COMPANY_NAME` moves from
