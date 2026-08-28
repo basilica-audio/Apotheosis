@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-08-28
+
 ### Changed
 
 - **The suite now presents itself as Basilica Audio in every host.** `COMPANY_NAME` moves from
