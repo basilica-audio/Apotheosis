@@ -18,17 +18,22 @@ Apotheosis is a lookahead brickwall **true-peak limiter** for the master bus, bu
 
 - **Input Gain** - -12 to +24 dB trim into the limiter
 - **Ceiling** - -12 to 0 dBTP true-peak target, default -1.0 dBTP (conventional mastering safety margin)
-- **True-peak detection** - 4x oversampled, so inter-sample peaks the naked sample stream would hide are caught and limited, not just sample-domain peaks; per-channel, **Stereo Link**-weighted (0-100%, default 100% fully max-linked)
+- **True-peak detection** - oversampled (4x by default; 8x or 16x via **Oversampling**, below), so inter-sample peaks the naked sample stream would hide are caught and limited, not just sample-domain peaks; per-channel, **Stereo Link**-weighted (0-100%, default 100% fully max-linked)
 - **Lookahead** - 0.1-20 ms; the mechanism that makes gain-reduction attack instantaneous and click-free rather than a reactive time constant
 - **Attack** - 0-50 ms, default 0 ms; a transient/sustain *classifier* (not a ramp) - short gain-reduction events recover near-instantly, longer ones follow Release
 - **Release** - 5-1000 ms, log-mapped, how quickly gain reduction relaxes back towards unity
 - **Auto Release** - 0-100%, default 0%; program-dependent modulation of the effective Release time from recent gain-reduction depth
 - **Release Curve** - Exponential / Linear / Smooth, shaping the release phase only (attack always stays instantaneous)
 - **Clip Mix** - 0-100% blend between the transparent limiter path and an alternate tanh soft-clip "clipper" character, both backed by the same never-exceed-ceiling guarantee
-- **Dither** - Off / 16-bit / 24-bit TPDF dither at the output word length, crossed with **Dither Shape** (Flat / Shaped)
+- **Style** - Classic (default) / Transparent / Punchy / Bus / Safe; the four non-Classic styles replace the rectangular gain envelope with an FIR-smoothed one and split Release into two concurrent followers, making zero overshoot a structural property of the algorithm rather than something a clamp catches afterwards
+- **Oversampling** (4x default / 8x / 16x) and **OS Filter** (Minimum Phase default / Linear Phase) - both prepare-latched exactly like Lookahead, taking effect at the next host `prepareToPlay()` rather than live
+- **True Peak Guard** - off by default; a measured BS.1770-4 true-peak correction applied after downsampling, turning the Ceiling from a margin-based promise into a measured one
+- **Dither** - Off / 16-bit / 24-bit TPDF dither at the output word length, crossed with **Dither Shape** (Flat / Shaped) and, once Dither is on, **Noise Shaping** (Legacy, default, or Weighted, a psychoacoustically-shaped requantiser)
+- **Delta** and **Unity Gain** - two audition monitor modes, both off by default: Delta replaces the output with what the limiter is removing, Unity Gain trims the output by minus Input Gain so drive amounts can be A/B'd at matched loudness
 - **Metering** - three photoreal needle meters (Gain Reduction / True Peak / LUFS), plus Short-Term/Integrated LUFS available via the processor for any host/test harness
 - **Presets** - eleven factory presets, user save/load/import/export (single files and zip banks), German-localised preset bar interface
-- **Photoreal skeuomorphic GUI** *(v0.3.0)* - pre-rendered brass/gunmetal faceplate, filmstrip knobs, needle meters, stepped 100/150/200% window scaling, full keyboard/screen-reader accessibility
+- **Photoreal skeuomorphic GUI** - pre-rendered brass/gunmetal faceplate, filmstrip knobs, needle meters, stepped 100/150/200% window scaling, full keyboard/screen-reader accessibility
+- Style, Oversampling, OS Filter, True Peak Guard, Noise Shaping, Delta and Unity Gain are host-visible and automatable now through the plugin's parameter layout; dedicated editor controls for them are later-milestone GUI work
 - Full state save/recall via `AudioProcessorValueTreeState`, with backward-tolerant migration from v0.1's seven-parameter state
 
 ## Signal flow
